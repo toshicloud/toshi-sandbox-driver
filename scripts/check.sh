@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+golangci_lint_version="v2.14.0"
+
+scripts/module-guard-test.sh
+scripts/module-guard.sh
+
+go build ./...
+GOOS=windows go build ./...
+go vet ./...
+go run "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$golangci_lint_version" run ./...
+go test ./...

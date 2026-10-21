@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Runs scripts/module-guard.sh on small modules that import a stand-in for
+# another github.com/toshicloud module: it must pass a module without the
+# import, and fail one that imports it from a test file, from a Windows-only
+# file, or that cannot be listed.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+guard="$root/scripts/module-guard.sh"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+export GOWORK=off GOFLAGS=
+
+# fixture creates a module named $1 that replaces the module $2 (default
+# github.com/toshicloud/other) with a local stand-in, and prints its
+# directory.
+fixture() {
+  local dir="$tmp/$1" other="${2:-github.com/toshicloud/other}"
+  mkdir -p "$dir/other/probe"
+  printf 'module %s\n\ngo 1.25.0\n' "$other" >"$dir/other/go.mod"
+  printf 'package probe\n' >"$dir/other/probe/probe.go"
+  printf 'module example.com/fixture\n\ngo 1.25.0\n\nrequire %s v0.0.0\n\nreplace %s => ./other\n' "$other" "$other" >"$dir/go.mod"
+  printf 'package fixture\n' >"$dir/fixture.go"
+  echo "$dir"
+}
+
+# expect runs the guard on $2 and checks that it exits with status $1 and,
+# when $3 is given, that its output names it.
+expect() {
+  local want="$1" dir="$2" text="${3:-}" got=0 out
+  out="$("$guard" "$dir" 2>&1)" || got=$?
+  if [ "$want" = 0 ] && [ "$got" != 0 ]; then
+    echo "module guard test: $(basename "$dir"): want a pass, got status $got: $out" >&2
+    exit 1
+  fi
+  if [ "$want" != 0 ] && [ "$got" = 0 ]; then
+    echo "module guard test: $(basename "$dir"): want a failure, got a pass" >&2
+    exit 1
+  fi
+  if [ -n "$text" ] && ! grep -qF "$text" <<<"$out"; then
+    echo "module guard test: $(basename "$dir"): output lacks \"$text\": $out" >&2
+    exit 1
+  fi
+}
+
+import='import _ "github.com/toshicloud/other/probe"'
+
+dir="$(fixture clean)"
+expect 0 "$dir"
+
+dir="$(fixture test-import)"
+printf 'package fixture\n\n%s\n' "$import" >"$dir/fixture_test.go"
+expect 1 "$dir" "GOOS=linux the module depends on a github.com/toshicloud module other than toshi-go and toshi-api"
+
+dir="$(fixture windows-import)"
+printf 'package fixture\n\n%s\n' "$import" >"$dir/fixture_windows.go"
+expect 1 "$dir" "GOOS=windows the module depends on a github.com/toshicloud module other than toshi-go and toshi-api"
+
+dir="$(fixture test-suffix-module github.com/toshicloud/toshi-api.test-helper)"
+printf 'package fixture\n\nimport _ "github.com/toshicloud/toshi-api.test-helper/probe"\n' >"$dir/fixture.go"
+expect 1 "$dir" "GOOS=linux the module depends on a github.com/toshicloud module other than toshi-go and toshi-api"
+
+dir="$(fixture listing-error)"
+printf 'package fixture\n\nimport _ "example.com/missing"\n' >"$dir/missing.go"
+expect 1 "$dir" "listing the packages for GOOS=linux failed"
+
+echo "module guard test: ok"
