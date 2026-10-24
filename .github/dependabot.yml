@@ -17,13 +17,19 @@ updates:
   - package-ecosystem: gomod
     directory: /
     schedule:
-      interval: monthly
+      interval: weekly
+      day: monday
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 1
     commit-message:
-      prefix: chore
+      prefix: build(deps)
     groups:
       go-modules:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      go-security:
+        applies-to: security-updates
         patterns:
           - "*"
