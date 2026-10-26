@@ -4,7 +4,8 @@ go 1.26.0
 
 require (
 	connectrpc.com/connect v1.21.1
-	github.com/toshicloud/toshi-api v0.0.0-20261021050435-978d32c4b7ee
-	github.com/toshicloud/toshi-go v0.0.0-20261021053156-4a8f9bdd15ed
+	github.com/toshicloud/toshi-api v0.2.0
 	google.golang.org/protobuf v1.36.12
 )
+
+require go.toshicloud.io/toshi v0.2.1-0.20261026062322-060846337580

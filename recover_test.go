@@ -13,11 +13,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// sandboxOf returns a sandbox workload of driver, called name.
-func sandboxOf(id, driver, name string) *workspacev1.Workload {
-	return &workspacev1.Workload{
+// sandboxOf returns a sandbox of driver, called name.
+func sandboxOf(id, driver, name string) *workspacev1.Sandbox {
+	return &workspacev1.Sandbox{
 		Id:     id,
-		Kind:   workspacev1.WorkloadKind_WORKLOAD_KIND_SANDBOX,
 		Labels: map[string]string{LabelDriver: driver, LabelSandbox: name, LabelState: StateReady},
 	}
 }
@@ -29,10 +28,10 @@ func executionEvent(cursor, workload string, t workspacev1.EventType) *workspace
 	}
 }
 
-func workloadEvent(cursor string, t workspacev1.EventType, wl *workspacev1.Workload) *workspacev1.Event {
+func sandboxEvent(cursor string, t workspacev1.EventType, sb *workspacev1.Sandbox) *workspacev1.Event {
 	return &workspacev1.Event{
-		Id: "ev-" + cursor, Type: t, WorkloadId: wl.GetId(), Cursor: cursor,
-		Payload: &workspacev1.Event_Workload{Workload: wl},
+		Id: "ev-" + cursor, Type: t, WorkloadId: sb.GetId(), Cursor: cursor,
+		Payload: &workspacev1.Event_Sandbox{Sandbox: sb},
 	}
 }
 
@@ -48,17 +47,17 @@ func cursors(events []*workspacev1.Event) []string {
 func TestRecover(t *testing.T) {
 	ours, gone, theirs := sandboxOf("wl-1", "orchestrator-1", "a"), sandboxOf("wl-2", "orchestrator-1", "b"), sandboxOf("wl-3", "orchestrator-2", "c")
 	f := newFake()
-	f.workloads = []*workspacev1.Workload{ours, theirs, sandboxOf("wl-4", "orchestrator-1", "d")}
+	f.sandboxes = []*workspacev1.Sandbox{ours, theirs, sandboxOf("wl-4", "orchestrator-1", "d")}
 	f.listCursor = "c2"
 	f.events = []*workspacev1.Event{
 		executionEvent("c1", "wl-1", workspacev1.EventType_EVENT_TYPE_EXECUTION_STARTED),
 		executionEvent("c2", "wl-1", workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED),
 		executionEvent("c3", "wl-2", workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED),
 		executionEvent("c4", "wl-3", workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED),
-		workloadEvent("c5", workspacev1.EventType_EVENT_TYPE_WORKLOAD_DELETED, gone),
-		workloadEvent("c6", workspacev1.EventType_EVENT_TYPE_WORKLOAD_UPDATED, ours),
+		sandboxEvent("c5", workspacev1.EventType_EVENT_TYPE_WORKLOAD_DELETED, gone),
+		sandboxEvent("c6", workspacev1.EventType_EVENT_TYPE_WORKLOAD_UPDATED, ours),
 		{Id: "ev-c7", Type: workspacev1.EventType_EVENT_TYPE_EMITTED, WorkloadId: "wl-4", Cursor: "c7"},
-		workloadEvent("c8", workspacev1.EventType_EVENT_TYPE_WORKLOAD_DELETED, theirs),
+		sandboxEvent("c8", workspacev1.EventType_EVENT_TYPE_WORKLOAD_DELETED, theirs),
 	}
 	d := newTestDriver(t, f, testConfig)
 	ctx := context.Background()
@@ -80,7 +79,6 @@ func TestRecover(t *testing.T) {
 	}
 	list := f.lists[0]
 	if list.GetLabels()[LabelDriver] != "orchestrator-1" || len(list.GetLabels()) != 1 ||
-		!slices.Equal(list.GetKinds(), []workspacev1.WorkloadKind{workspacev1.WorkloadKind_WORKLOAD_KIND_SANDBOX}) ||
 		list.GetProject() != "default" || list.GetEnvironment() != "production" {
 		t.Fatalf("list request = %v", list)
 	}
@@ -98,44 +96,49 @@ func TestRecover(t *testing.T) {
 	}
 	var asked []string
 	for _, r := range f.eventLists {
-		asked = append(asked, r.GetCursor())
+		asked = append(asked, r.GetPageToken())
 	}
-	if !slices.Equal(asked, []string{"c1", "c3", "c5", "c7", "c8"}) {
-		t.Fatalf("ListEvents cursors %v", asked)
+	if !slices.Equal(asked, []string{"c1", "c3", "c5", "c7"}) {
+		t.Fatalf("ListEvents page tokens %v", asked)
 	}
 }
 
-// labelled returns wl with the driver label set to driver and the state
+// labelled returns sb with the driver label set to driver and the state
 // label to state.
-func labelled(wl *workspacev1.Workload, driver, state string) *workspacev1.Workload {
-	c := proto.Clone(wl).(*workspacev1.Workload)
+func labelled(sb *workspacev1.Sandbox, driver, state string) *workspacev1.Sandbox {
+	c := proto.Clone(sb).(*workspacev1.Sandbox)
 	c.Labels[LabelDriver], c.Labels[LabelState] = driver, state
 	return c
 }
 
-// jobOf returns a job workload labelled as a sandbox of driver.
-func jobOf(id, driver string) *workspacev1.Workload {
-	wl := sandboxOf(id, driver, "job")
-	wl.Kind = workspacev1.WorkloadKind_WORKLOAD_KIND_JOB
-	return wl
+// jobOf returns a job labelled as a sandbox of driver.
+func jobOf(id, driver string) *workspacev1.Job {
+	return &workspacev1.Job{Id: id, Labels: map[string]string{LabelDriver: driver, LabelSandbox: "job"}}
 }
 
-func TestRecoverAppliesWorkloadEvents(t *testing.T) {
+// jobEvent is the event of a job after a change.
+func jobEvent(cursor string, t workspacev1.EventType, job *workspacev1.Job) *workspacev1.Event {
+	return &workspacev1.Event{
+		Id: "ev-" + cursor, Type: t, WorkloadId: job.GetId(), Cursor: cursor,
+		Payload: &workspacev1.Event_Job{Job: job},
+	}
+}
+
+func TestRecoverAppliesSandboxEvents(t *testing.T) {
 	kept, moved, gone := sandboxOf("wl-1", "orchestrator-1", "a"), sandboxOf("wl-2", "orchestrator-1", "b"), sandboxOf("wl-3", "orchestrator-1", "c")
 	added := sandboxOf("wl-4", "orchestrator-1", "d")
 	f := newFake()
-	// The list is read at c1, after the stored cursor c0; a job carrying the
-	// label is listed too.
-	f.workloads = []*workspacev1.Workload{kept, moved, gone, jobOf("wl-5", "orchestrator-1")}
+	// The list is read at c1, after the stored cursor c0.
+	f.sandboxes = []*workspacev1.Sandbox{kept, moved, gone}
 	f.listCursor = "c1"
 	f.events = []*workspacev1.Event{
-		workloadEvent("c1", workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, labelled(kept, "orchestrator-1", StateStarting)),
-		workloadEvent("c2", workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, added),
+		sandboxEvent("c1", workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, labelled(kept, "orchestrator-1", StateStarting)),
+		sandboxEvent("c2", workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, added),
 		executionEvent("c3", "wl-4", workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED),
-		workloadEvent("c4", workspacev1.EventType_EVENT_TYPE_WORKLOAD_STATE_CHANGED, labelled(kept, "orchestrator-1", StateBusy)),
-		workloadEvent("c5", workspacev1.EventType_EVENT_TYPE_WORKLOAD_UPDATED, labelled(moved, "orchestrator-2", StateReady)),
-		workloadEvent("c6", workspacev1.EventType_EVENT_TYPE_WORKLOAD_DELETED, gone),
-		workloadEvent("c7", workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, jobOf("wl-6", "orchestrator-1")),
+		sandboxEvent("c4", workspacev1.EventType_EVENT_TYPE_WORKLOAD_STATE_CHANGED, labelled(kept, "orchestrator-1", StateBusy)),
+		sandboxEvent("c5", workspacev1.EventType_EVENT_TYPE_WORKLOAD_UPDATED, labelled(moved, "orchestrator-2", StateReady)),
+		sandboxEvent("c6", workspacev1.EventType_EVENT_TYPE_WORKLOAD_DELETED, gone),
+		jobEvent("c7", workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, jobOf("wl-6", "orchestrator-1")),
 		executionEvent("c8", "wl-6", workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED),
 		executionEvent("c9", "wl-5", workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED),
 	}
@@ -143,8 +146,8 @@ func TestRecoverAppliesWorkloadEvents(t *testing.T) {
 
 	// A sandbox created after the list is added and its execution kept, a
 	// changed one is as its last event shows it, one relabelled for another
-	// driver or deleted is removed, and jobs carrying the label, listed or
-	// created, are left out with their executions.
+	// driver or deleted is removed, and a job carrying the label, created
+	// after the list, is left out with its executions.
 	rec, err := d.Recover(context.Background(), "c0")
 	if err != nil {
 		t.Fatal(err)
@@ -161,33 +164,33 @@ func TestRecoverAppliesWorkloadEvents(t *testing.T) {
 	}
 }
 
-func TestFollow(t *testing.T) {
+func TestWatch(t *testing.T) {
 	f := newFake()
 	ours, theirs := sandboxOf("wl-1", "orchestrator-1", "a"), sandboxOf("wl-3", "orchestrator-2", "c")
-	f.workloads = []*workspacev1.Workload{ours}
-	f.changes = []*workspacev1.WatchWorkloadsResponse{
-		{Type: workspacev1.EventType_EVENT_TYPE_WORKLOAD_UPDATED, Workload: theirs, Cursor: "c3"},
-		{Type: workspacev1.EventType_EVENT_TYPE_WORKLOAD_UPDATED, Workload: ours, Cursor: "c4"},
+	f.sandboxes = []*workspacev1.Sandbox{ours}
+	f.changes = []*workspacev1.WatchSandboxesResponse{
+		{Type: workspacev1.EventType_EVENT_TYPE_WORKLOAD_UPDATED, Sandbox: theirs, Cursor: "c3"},
+		{Type: workspacev1.EventType_EVENT_TYPE_WORKLOAD_UPDATED, Sandbox: ours, Cursor: "c4"},
 	}
 	f.events = []*workspacev1.Event{
 		executionEvent("c1", "wl-1", workspacev1.EventType_EVENT_TYPE_EXECUTION_STARTED),
 		executionEvent("c3", "wl-3", workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED),
-		workloadEvent("c4", workspacev1.EventType_EVENT_TYPE_WORKLOAD_UPDATED, ours),
+		sandboxEvent("c4", workspacev1.EventType_EVENT_TYPE_WORKLOAD_UPDATED, ours),
 		executionEvent("c5", "wl-1", workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED),
 	}
 	d := newTestDriver(t, f, testConfig)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := d.Follow(ctx, "", func(Update) error { return nil }); err == nil {
-		t.Fatal("Follow without a cursor: no error")
+	if err := d.Watch(ctx, "", func(Update) error { return nil }); err == nil {
+		t.Fatal("Watch without a cursor: no error")
 	}
 	if _, err := d.Recover(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
 	stop := errors.New("stop")
 	var sandboxes, events []string
-	err := d.Follow(ctx, "c2", func(u Update) error {
+	err := d.Watch(ctx, "c2", func(u Update) error {
 		switch {
 		case u.Sandbox != nil:
 			sandboxes = append(sandboxes, u.Sandbox.ID()+"/"+u.Sandbox.Name+" "+u.Type.String())
@@ -203,7 +206,7 @@ func TestFollow(t *testing.T) {
 		return nil
 	})
 	if !errors.Is(err, stop) {
-		t.Fatalf("Follow = %v, want fn's error", err)
+		t.Fatalf("Watch = %v, want fn's error", err)
 	}
 	if !slices.Equal(sandboxes, []string{"wl-1/a EVENT_TYPE_WORKLOAD_UPDATED"}) || !slices.Equal(events, []string{"c5"}) {
 		t.Fatalf("sandbox updates %v, event updates %v", sandboxes, events)
@@ -212,37 +215,37 @@ func TestFollow(t *testing.T) {
 	watches := slices.Clone(f.watches)
 	f.mu.Unlock()
 	slices.Sort(watches)
-	if !slices.Equal(watches, []string{"events c2", "workloads c2"}) {
+	if !slices.Equal(watches, []string{"events c2", "sandboxes c2"}) {
 		t.Fatalf("watches %v", watches)
 	}
 
-	// A context that ends ends Follow with its error.
+	// A context that ends ends Watch with its error.
 	short, cancelShort := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancelShort()
-	if err := d.Follow(short, "c9", func(Update) error { return nil }); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Follow past its deadline = %v", err)
+	if err := d.Watch(short, "c9", func(Update) error { return nil }); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Watch past its deadline = %v", err)
 	}
 }
 
-func TestFollowLearnsSandboxesFromTheEventLog(t *testing.T) {
+func TestWatchLearnsSandboxesFromTheEventLog(t *testing.T) {
 	old, added := sandboxOf("wl-1", "orchestrator-1", "a"), sandboxOf("wl-2", "orchestrator-1", "b")
 	job := jobOf("wl-3", "orchestrator-1")
 	f := newFake()
-	f.workloads = []*workspacev1.Workload{old}
+	f.sandboxes = []*workspacev1.Sandbox{old}
 	f.listCursor = "c1"
-	f.changes = []*workspacev1.WatchWorkloadsResponse{
-		{Type: workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, Workload: added, Cursor: "c2"},
-		{Type: workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, Workload: job, Cursor: "c4"},
-		{Type: workspacev1.EventType_EVENT_TYPE_WORKLOAD_UPDATED, Workload: old, Cursor: "c6"},
+	f.changes = []*workspacev1.WatchSandboxesResponse{
+		{Type: workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, Sandbox: added, Cursor: "c2"},
+		{Type: workspacev1.EventType_EVENT_TYPE_WORKLOAD_UPDATED, Sandbox: old, Cursor: "c6"},
 	}
 	f.events = []*workspacev1.Event{
-		workloadEvent("c2", workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, added),
+		sandboxEvent("c2", workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, added),
 		executionEvent("c3", "wl-2", workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED),
-		workloadEvent("c4", workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, job),
+		jobEvent("c4", workspacev1.EventType_EVENT_TYPE_WORKLOAD_CREATED, job),
 		executionEvent("c5", "wl-3", workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED),
 		executionEvent("c6", "wl-1", workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED),
 	}
-	// WatchWorkloads sends nothing until WatchEvents' last event is handled.
+	// The sandbox watch sends nothing until the event watch's last event is
+	// handled.
 	f.holdChanges = make(chan struct{})
 	d := newTestDriver(t, f, testConfig)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -252,11 +255,11 @@ func TestFollowLearnsSandboxesFromTheEventLog(t *testing.T) {
 	}
 
 	// The sandbox created at c2 is known from its event in WatchEvents, so
-	// its execution at c3 is passed on before WatchWorkloads shows it; the
+	// its execution at c3 is passed on before the sandbox watch shows it; the
 	// job carrying the label is left out on both watches.
 	stop := errors.New("stop")
 	var sandboxes, events []string
-	err := d.Follow(ctx, "c1", func(u Update) error {
+	err := d.Watch(ctx, "c1", func(u Update) error {
 		switch {
 		case u.Sandbox != nil:
 			sandboxes = append(sandboxes, u.Sandbox.ID()+" "+u.Type.String())
@@ -272,7 +275,7 @@ func TestFollowLearnsSandboxesFromTheEventLog(t *testing.T) {
 		return nil
 	})
 	if !errors.Is(err, stop) {
-		t.Fatalf("Follow = %v, want fn's error", err)
+		t.Fatalf("Watch = %v, want fn's error", err)
 	}
 	if !slices.Equal(events, []string{"c3", "c6"}) ||
 		!slices.Equal(sandboxes, []string{"wl-2 EVENT_TYPE_WORKLOAD_CREATED", "wl-1 EVENT_TYPE_WORKLOAD_UPDATED"}) {
@@ -284,7 +287,7 @@ func TestDeleteAndWait(t *testing.T) {
 	f := newFake()
 	d := newTestDriver(t, f, testConfig)
 	ctx := context.Background()
-	sb := &Sandbox{Name: "a", Workload: sandboxOf("wl-1", "orchestrator-1", "a")}
+	sb := &Sandbox{Name: "a", Sandbox: sandboxOf("wl-1", "orchestrator-1", "a")}
 
 	op, err := d.Delete(ctx, sb)
 	if err != nil {

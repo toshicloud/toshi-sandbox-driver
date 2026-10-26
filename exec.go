@@ -8,9 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
 	workspacev1 "github.com/toshicloud/toshi-api/workspacev1"
-	toshi "github.com/toshicloud/toshi-go"
+	toshi "go.toshicloud.io/toshi"
 )
 
 // Command is one command to run in a sandbox.
@@ -24,9 +23,9 @@ type Command struct {
 	Cwd string
 	// Stdin is fed to the command's standard input, which is closed when it
 	// ends. Nil closes standard input at once. A read of Stdin that fails
-	// before the command ended closes standard input too, and fails Exec
-	// with the read's error. Exec does not wait for a read of Stdin to return
-	// after the command ended.
+	// before the command ended closes standard input too, and fails Execute
+	// with the read's error. Execute does not wait for a read of Stdin to
+	// return after the command ended.
 	Stdin io.Reader
 	// Stdout and Stderr receive the command's output as it streams. Nil
 	// discards it.
@@ -50,13 +49,14 @@ type Result struct {
 	TimedOut bool
 }
 
-// Exec runs cmd in the sandbox with Execute. It records the sandbox as
-// StateBusy, streams standard input and output, cancels the command at its
-// timeout, and records the sandbox as StateReady once the command ended.
-// When Execute fails, its stream is lost or ctx ends before the command
-// ended, the driver cannot always tell whether the command started or still
-// runs, so Exec returns the error and leaves the sandbox StateBusy.
-func (d *Driver) Exec(ctx context.Context, sb *Sandbox, cmd Command) (Result, error) {
+// Execute runs cmd in the sandbox with Sandboxes.Execute. It records the
+// sandbox as StateBusy, streams standard input and output, cancels the
+// command at its timeout, and records the sandbox as StateReady once the
+// command ended. When Execute fails, its stream is lost or ctx ends before
+// the command ended, the driver cannot always tell whether the command
+// started or still runs, so Execute returns the error and leaves the sandbox
+// StateBusy.
+func (d *Driver) Execute(ctx context.Context, sb *Sandbox, cmd Command) (Result, error) {
 	if err := d.setState(ctx, sb, StateBusy); err != nil {
 		return Result{}, err
 	}
@@ -74,9 +74,9 @@ func (d *Driver) Exec(ctx context.Context, sb *Sandbox, cmd Command) (Result, er
 // what else went wrong: a read of Stdin, a write to Stdout or Stderr, or a
 // cancel at the timeout that failed while the command ran on to its end.
 func (d *Driver) run(ctx context.Context, sb *Sandbox, cmd Command) (Result, bool, error) {
-	p, err := d.client.Execute(ctx, &workspacev1.ExecuteStart{
-		WorkloadId: sb.ID(),
-		Command:    &workspacev1.Command{Argv: cmd.Argv, Env: cmd.Env, Cwd: cmd.Cwd},
+	p, err := d.client.Workload.Sandboxes.Execute(ctx, &workspacev1.ExecuteStart{
+		SandboxId: sb.ID(),
+		Command:   &workspacev1.Command{Argv: cmd.Argv, Env: cmd.Env, Cwd: cmd.Cwd},
 	})
 	if err != nil {
 		return Result{}, false, fmt.Errorf("driver: execute in sandbox %s: %w", sb.ID(), err)
@@ -112,9 +112,9 @@ func (d *Driver) run(ctx context.Context, sb *Sandbox, cmd Command) (Result, boo
 	if cmd.Timeout > 0 {
 		cancelErr = make(chan error, 1)
 		timer = time.AfterFunc(cmd.Timeout, func() {
-			_, err := d.client.Workspace.CancelExecution(ctx, connect.NewRequest(&workspacev1.CancelExecutionRequest{
+			_, err := d.client.Workload.Sandboxes.CancelExecution(ctx, &workspacev1.CancelExecutionRequest{
 				ExecutionId: res.ExecutionID,
-			}))
+			})
 			cancelErr <- err
 		})
 	}

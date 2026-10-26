@@ -16,7 +16,7 @@ import (
 
 	"connectrpc.com/connect"
 	workspacev1 "github.com/toshicloud/toshi-api/workspacev1"
-	toshi "github.com/toshicloud/toshi-go"
+	toshi "go.toshicloud.io/toshi"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	driver "github.com/toshicloud/toshi-sandbox-driver"
@@ -106,7 +106,7 @@ func TestSandboxFlow(t *testing.T) {
 	if again.ID() != sb.ID() {
 		t.Fatalf("Create again made %s, want %s", again.ID(), sb.ID())
 	}
-	t.Logf("step 2: created %s with labels %v; a second Create returned the same sandbox", sb.ID(), sb.Workload.GetLabels())
+	t.Logf("step 2: created %s with labels %v; a second Create returned the same sandbox", sb.ID(), sb.Sandbox.GetLabels())
 
 	// Step 3: running, and read.
 	started := time.Now()
@@ -129,16 +129,16 @@ func TestSandboxFlow(t *testing.T) {
 	// Step 4: standard input fed, output streamed, exit statuses returned.
 	input := "hello from the driver\n"
 	var stdout, stderr bytes.Buffer
-	res, err := d.Exec(ctx, sb, driver.Command{Argv: []string{"cat"}, Stdin: strings.NewReader(input), Stdout: &stdout, Stderr: &stderr})
+	res, err := d.Execute(ctx, sb, driver.Command{Argv: []string{"cat"}, Stdin: strings.NewReader(input), Stdout: &stdout, Stderr: &stderr})
 	if err != nil {
-		t.Fatalf("Exec cat: %v", err)
+		t.Fatalf("Execute cat: %v", err)
 	}
 	if res.ExitCode != 0 || stdout.String() != input {
 		t.Fatalf("cat: %+v, stdout %q, stderr %q", res, stdout.String(), stderr.String())
 	}
 	stdout.Reset()
 	stderr.Reset()
-	res, err = d.Exec(ctx, sb, driver.Command{
+	res, err = d.Execute(ctx, sb, driver.Command{
 		Argv:   []string{"sh", "-c", `echo "out $GREETING"; pwd; echo err >&2; exit 7`},
 		Env:    map[string]string{"GREETING": "hi"},
 		Cwd:    "/tmp",
@@ -146,7 +146,7 @@ func TestSandboxFlow(t *testing.T) {
 		Stderr: &stderr,
 	})
 	if err != nil {
-		t.Fatalf("Exec sh: %v", err)
+		t.Fatalf("Execute sh: %v", err)
 	}
 	if res.ExitCode != 7 || stdout.String() != "out hi\n/tmp\n" || stderr.String() != "err\n" {
 		t.Fatalf("sh: %+v, stdout %q, stderr %q", res, stdout.String(), stderr.String())
@@ -155,9 +155,9 @@ func TestSandboxFlow(t *testing.T) {
 
 	// Step 5: cancelled at its timeout.
 	started = time.Now()
-	res, err = d.Exec(ctx, sb, driver.Command{Argv: []string{"sleep", "600"}, Timeout: 3 * time.Second})
+	res, err = d.Execute(ctx, sb, driver.Command{Argv: []string{"sleep", "600"}, Timeout: 3 * time.Second})
 	if err != nil {
-		t.Fatalf("Exec sleep: %v", err)
+		t.Fatalf("Execute sleep: %v", err)
 	}
 	took := time.Since(started)
 	if !res.TimedOut || !res.Cancelled || took > time.Minute {
@@ -166,11 +166,11 @@ func TestSandboxFlow(t *testing.T) {
 	t.Logf("step 5: sleep 600 cancelled at its 3s timeout, ended after %s", took.Round(100*time.Millisecond))
 
 	// Step 6: the state label as the server holds it.
-	got, err := client.Workspace.GetWorkload(ctx, connect.NewRequest(&workspacev1.GetWorkloadRequest{Id: sb.ID()}))
+	got, err := client.Workload.Sandboxes.Get(ctx, &workspacev1.GetSandboxRequest{Id: sb.ID()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	labels := got.Msg.GetWorkload().GetLabels()
+	labels := got.GetSandbox().GetLabels()
 	if labels[driver.LabelState] != driver.StateReady || labels[driver.LabelDriver] != "e2e" || labels[driver.LabelSandbox] != "e2e-sandbox" {
 		t.Fatalf("labels = %v", labels)
 	}
@@ -199,21 +199,21 @@ func TestSandboxFlow(t *testing.T) {
 	t.Logf("step 7: Recover found %s (%s) and %d events after the stored cursor", sb.ID(), rec.Sandboxes[0].State(), len(rec.Events))
 
 	sb = rec.Sandboxes[0]
-	followCtx, stopFollow := context.WithCancel(ctx)
+	watchCtx, stopWatch := context.WithCancel(ctx)
 	updates := make(chan driver.Update, 64)
 	var followErr error
 	var following sync.WaitGroup
 	following.Add(1)
 	go func() {
 		defer following.Done()
-		followErr = d.Follow(followCtx, rec.Cursor, func(u driver.Update) error {
+		followErr = d.Watch(watchCtx, rec.Cursor, func(u driver.Update) error {
 			updates <- u
 			return nil
 		})
 	}()
-	res, err = d.Exec(ctx, sb, driver.Command{Argv: []string{"true"}})
+	res, err = d.Execute(ctx, sb, driver.Command{Argv: []string{"true"}})
 	if err != nil || res.ExitCode != 0 {
-		t.Fatalf("Exec true: %+v, %v", res, err)
+		t.Fatalf("Execute true: %+v, %v", res, err)
 	}
 	await(t, updates, "the execution's end and the busy label", func(seen []driver.Update) bool {
 		var ended, busy bool
@@ -223,7 +223,7 @@ func TestSandboxFlow(t *testing.T) {
 		}
 		return ended && busy
 	})
-	t.Logf("step 7: Follow reported execution %s ending and %s turning busy", res.ExecutionID, sb.ID())
+	t.Logf("step 7: Watch reported execution %s ending and %s turning busy", res.ExecutionID, sb.ID())
 
 	// Step 8: deleted, and the delete's operation followed to its end.
 	op, err := d.Delete(ctx, sb)
@@ -233,8 +233,8 @@ func TestSandboxFlow(t *testing.T) {
 	if op, err = d.WaitOperation(ctx, op.GetId()); err != nil || !op.GetDone() {
 		t.Fatalf("WaitOperation: %v, %v", op, err)
 	}
-	if _, err := client.Workspace.GetWorkload(ctx, connect.NewRequest(&workspacev1.GetWorkloadRequest{Id: sb.ID()})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("GetWorkload after the delete: %v, want NOT_FOUND", err)
+	if _, err := client.Workload.Sandboxes.Get(ctx, &workspacev1.GetSandboxRequest{Id: sb.ID()}); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("GetSandbox after the delete: %v, want NOT_FOUND", err)
 	}
 	await(t, updates, "the delete", func(seen []driver.Update) bool {
 		for _, u := range seen {
@@ -244,14 +244,14 @@ func TestSandboxFlow(t *testing.T) {
 		}
 		return false
 	})
-	stopFollow()
+	stopWatch()
 	following.Wait()
 	if !errors.Is(followErr, context.Canceled) {
-		t.Fatalf("Follow ended with %v, want its context's end", followErr)
+		t.Fatalf("Watch ended with %v, want its context's end", followErr)
 	}
-	t.Logf("step 8: %s deleted, operation %s done, and Follow reported the delete", sb.ID(), op.GetId())
+	t.Logf("step 8: %s deleted, operation %s done, and Watch reported the delete", sb.ID(), op.GetId())
 
-	// Every Workspace call but WatchOutput, and ListProjects.
+	// Every WorkloadService call but WatchOutput, and ListProjects.
 	procedures, counts := counted.list()
 	for i, p := range procedures {
 		t.Logf("call %s x%d", p, counts[i])
@@ -272,19 +272,19 @@ func TestSandboxFlow(t *testing.T) {
 // WatchOutput, and ProjectService's ListProjects.
 var flowCalls = []string{
 	"toshi.workspace.v1.ProjectService/ListProjects",
-	"toshi.workspace.v1.WorkspaceService/CreateWorkload",
-	"toshi.workspace.v1.WorkspaceService/WaitWorkload",
-	"toshi.workspace.v1.WorkspaceService/GetWorkload",
-	"toshi.workspace.v1.WorkspaceService/Execute",
-	"toshi.workspace.v1.WorkspaceService/CancelExecution",
-	"toshi.workspace.v1.WorkspaceService/PatchWorkload",
-	"toshi.workspace.v1.WorkspaceService/ListWorkloads",
-	"toshi.workspace.v1.WorkspaceService/ListEvents",
-	"toshi.workspace.v1.WorkspaceService/WatchWorkloads",
-	"toshi.workspace.v1.WorkspaceService/WatchEvents",
-	"toshi.workspace.v1.WorkspaceService/DeleteWorkload",
-	"toshi.workspace.v1.WorkspaceService/GetOperation",
-	"toshi.workspace.v1.WorkspaceService/WaitOperation",
+	"toshi.workspace.v1.WorkloadService/CreateSandbox",
+	"toshi.workspace.v1.WorkloadService/WaitSandbox",
+	"toshi.workspace.v1.WorkloadService/GetSandbox",
+	"toshi.workspace.v1.WorkloadService/Execute",
+	"toshi.workspace.v1.WorkloadService/CancelExecution",
+	"toshi.workspace.v1.WorkloadService/UpdateSandbox",
+	"toshi.workspace.v1.WorkloadService/ListSandboxes",
+	"toshi.workspace.v1.WorkloadService/ListEvents",
+	"toshi.workspace.v1.WorkloadService/WatchSandboxes",
+	"toshi.workspace.v1.WorkloadService/WatchEvents",
+	"toshi.workspace.v1.WorkloadService/DeleteSandbox",
+	"toshi.workspace.v1.WorkloadService/GetOperation",
+	"toshi.workspace.v1.WorkloadService/WaitOperation",
 }
 
 // countType counts the events of type t.
@@ -309,7 +309,7 @@ func await(t *testing.T, updates <-chan driver.Update, what string, done func([]
 		case u := <-updates:
 			seen = append(seen, u)
 		case <-timeout:
-			t.Fatalf("Follow did not report %s in a minute; it reported %d updates", what, len(seen))
+			t.Fatalf("Watch did not report %s in a minute; it reported %d updates", what, len(seen))
 		}
 	}
 }
@@ -335,7 +335,7 @@ func servedCommit(t *testing.T, bin string) string {
 func deleteSandbox(t *testing.T, client *toshi.Client, id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	resp, err := client.Workspace.DeleteWorkload(ctx, connect.NewRequest(&workspacev1.DeleteWorkloadRequest{Id: id}))
+	resp, err := client.Workload.Sandboxes.Delete(ctx, &workspacev1.DeleteSandboxRequest{Id: id})
 	if connect.CodeOf(err) == connect.CodeNotFound {
 		return
 	}
@@ -343,8 +343,8 @@ func deleteSandbox(t *testing.T, client *toshi.Client, id string) {
 		t.Errorf("delete %s: %v", id, err)
 		return
 	}
-	if _, err := client.WaitOperation(ctx, &workspacev1.WaitOperationRequest{
-		Id:      resp.Msg.GetOperation().GetId(),
+	if _, err := client.Workload.WaitOperation(ctx, &workspacev1.WaitOperationRequest{
+		Id:      resp.GetOperation().GetId(),
 		Timeout: durationpb.New(30 * time.Second),
 	}); err != nil {
 		t.Errorf("wait for the delete of %s: %v", id, err)

@@ -60,7 +60,7 @@ func TestCreateAndWaitRunning(t *testing.T) {
 	if req.GetProject() != "default" || req.GetEnvironment() != "production" {
 		t.Fatalf("create scope = %s/%s", req.GetProject(), req.GetEnvironment())
 	}
-	if spec := req.GetSandbox(); spec.GetSize() != "toshi-linux-2x" || spec.GetMaxDuration().AsDuration() != 30*time.Minute {
+	if spec := req.GetSpec(); spec.GetSize() != "toshi-linux-2x" || spec.GetMaxDuration().AsDuration() != 30*time.Minute {
 		t.Fatalf("create spec = %v", spec)
 	}
 	wantLabels := map[string]string{LabelDriver: "orchestrator-1", LabelSandbox: "task-7", LabelState: StateStarting}
@@ -92,21 +92,21 @@ func TestCreateAndWaitRunning(t *testing.T) {
 	if err := d.WaitRunning(ctx, sb); err != nil {
 		t.Fatal(err)
 	}
-	wantStates := []workspacev1.WorkloadState{workspacev1.WorkloadState_WORKLOAD_STATE_RUNNING, workspacev1.WorkloadState_WORKLOAD_STATE_ENDED}
-	_, waits, patches, _ := f.calls()
+	wantStates := []workspacev1.SandboxState{workspacev1.SandboxState_SANDBOX_STATE_RUNNING, workspacev1.SandboxState_SANDBOX_STATE_ENDED}
+	_, waits, updates, _ := f.calls()
 	if w := waits[0]; w.GetId() != "wl-1" || !slices.Equal(w.GetStates(), wantStates) || w.GetTimeout().AsDuration() != waitBound {
 		t.Fatalf("wait = %v", w)
 	}
-	if sb.State() != StateReady || sb.Workload.GetStatus().GetState() != workspacev1.WorkloadState_WORKLOAD_STATE_RUNNING {
-		t.Fatalf("after WaitRunning: %s %s", sb.State(), sb.Workload.GetStatus().GetState())
+	if sb.State() != StateReady || sb.Sandbox.GetStatus().GetState() != workspacev1.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Fatalf("after WaitRunning: %s %s", sb.State(), sb.Sandbox.GetStatus().GetState())
 	}
-	patch := patches[0]
+	patch := updates[0]
 	if !slices.Equal(patch.GetUpdateMask().GetPaths(), []string{"labels"}) {
 		t.Fatalf("patch mask = %v", patch.GetUpdateMask().GetPaths())
 	}
 	wantLabels[LabelState] = StateReady
-	if !maps.Equal(patch.GetWorkload().GetLabels(), wantLabels) {
-		t.Fatalf("patch labels = %v, want %v", patch.GetWorkload().GetLabels(), wantLabels)
+	if !maps.Equal(patch.GetSandbox().GetLabels(), wantLabels) {
+		t.Fatalf("patch labels = %v, want %v", patch.GetSandbox().GetLabels(), wantLabels)
 	}
 }
 
@@ -125,7 +125,7 @@ func TestCreateNeedsWholeMinutes(t *testing.T) {
 
 func TestWaitRunningEnded(t *testing.T) {
 	f := newFake()
-	f.waitState = workspacev1.WorkloadState_WORKLOAD_STATE_ENDED
+	f.waitState = workspacev1.SandboxState_SANDBOX_STATE_ENDED
 	d := newTestDriver(t, f, testConfig)
 	sb, err := d.Create(context.Background(), "s", Spec{Size: "toshi-linux-2x", MaxDuration: time.Minute})
 	if err != nil {
@@ -135,7 +135,7 @@ func TestWaitRunningEnded(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("err = %v", err)
 	}
-	if _, _, patches, _ := f.calls(); len(patches) != 0 {
+	if _, _, updates, _ := f.calls(); len(updates) != 0 {
 		t.Fatalf("an ended sandbox was patched: %v", f.states())
 	}
 }
@@ -157,7 +157,7 @@ func exitCode(code int32) *workspacev1.ExecuteResponse {
 	return &workspacev1.ExecuteResponse{Message: &workspacev1.ExecuteResponse_Exit{Exit: &workspacev1.ExecutionExit{ExitCode: &code}}}
 }
 
-func TestExecStreams(t *testing.T) {
+func TestExecuteStreams(t *testing.T) {
 	f := newFake()
 	var mu sync.Mutex
 	var start *workspacev1.ExecuteStart
@@ -196,7 +196,7 @@ func TestExecStreams(t *testing.T) {
 
 	input := strings.Repeat("line\n", 50000)
 	var stdout, stderr bytes.Buffer
-	res, err := d.Exec(context.Background(), sb, Command{
+	res, err := d.Execute(context.Background(), sb, Command{
 		Argv:   []string{"cat"},
 		Env:    map[string]string{"A": "1"},
 		Cwd:    "/work",
@@ -215,7 +215,7 @@ func TestExecStreams(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if start.GetWorkloadId() != "wl-1" || !slices.Equal(start.GetCommand().GetArgv(), []string{"cat"}) ||
+	if start.GetSandboxId() != "wl-1" || !slices.Equal(start.GetCommand().GetArgv(), []string{"cat"}) ||
 		start.GetCommand().GetEnv()["A"] != "1" || start.GetCommand().GetCwd() != "/work" {
 		t.Fatalf("start = %v", start)
 	}
@@ -224,7 +224,7 @@ func TestExecStreams(t *testing.T) {
 	}
 }
 
-func TestExecTimeoutCancels(t *testing.T) {
+func TestExecuteTimeoutCancels(t *testing.T) {
 	f := newFake()
 	f.execute = func(ctx context.Context, stream *connect.BidiStream[workspacev1.ExecuteRequest, workspacev1.ExecuteResponse]) error {
 		if _, err := stream.Receive(); err != nil {
@@ -245,7 +245,7 @@ func TestExecTimeoutCancels(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	res, err := d.Exec(ctx, sb, Command{Argv: []string{"sleep", "600"}, Timeout: 50 * time.Millisecond})
+	res, err := d.Execute(ctx, sb, Command{Argv: []string{"sleep", "600"}, Timeout: 50 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestExecTimeoutCancels(t *testing.T) {
 	}
 }
 
-func TestExecStreamLostLeavesBusy(t *testing.T) {
+func TestExecuteStreamLostLeavesBusy(t *testing.T) {
 	f := newFake()
 	f.execute = func(_ context.Context, stream *connect.BidiStream[workspacev1.ExecuteRequest, workspacev1.ExecuteResponse]) error {
 		if _, err := stream.Receive(); err != nil {
@@ -274,8 +274,8 @@ func TestExecStreamLostLeavesBusy(t *testing.T) {
 	d := newTestDriver(t, f, testConfig)
 	sb := startSandbox(t, d)
 
-	if _, err := d.Exec(context.Background(), sb, Command{Argv: []string{"true"}}); err == nil {
-		t.Fatal("Exec over a lost stream: no error")
+	if _, err := d.Execute(context.Background(), sb, Command{Argv: []string{"true"}}); err == nil {
+		t.Fatal("Execute over a lost stream: no error")
 	}
 	if sb.State() != StateBusy {
 		t.Fatalf("state = %s, want %s", sb.State(), StateBusy)
@@ -303,7 +303,7 @@ func (b *brokenInput) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func TestExecStdinReadError(t *testing.T) {
+func TestExecuteStdinReadError(t *testing.T) {
 	f := newFake()
 	var got []byte
 	f.execute = func(_ context.Context, stream *connect.BidiStream[workspacev1.ExecuteRequest, workspacev1.ExecuteResponse]) error {
@@ -329,7 +329,7 @@ func TestExecStdinReadError(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	res, err := d.Exec(ctx, sb, Command{Argv: []string{"cat"}, Stdin: &brokenInput{data: "partial"}})
+	res, err := d.Execute(ctx, sb, Command{Argv: []string{"cat"}, Stdin: &brokenInput{data: "partial"}})
 	if !errors.Is(err, errInput) {
 		t.Fatalf("err = %v, want the read error", err)
 	}
@@ -339,7 +339,7 @@ func TestExecStdinReadError(t *testing.T) {
 	}
 }
 
-func TestExecDoesNotWaitForBlockedInput(t *testing.T) {
+func TestExecuteDoesNotWaitForBlockedInput(t *testing.T) {
 	f := newFake()
 	f.execute = func(_ context.Context, stream *connect.BidiStream[workspacev1.ExecuteRequest, workspacev1.ExecuteResponse]) error {
 		if _, err := stream.Receive(); err != nil {
@@ -357,8 +357,8 @@ func TestExecDoesNotWaitForBlockedInput(t *testing.T) {
 	defer cancel()
 	stdin, never := io.Pipe()
 	defer func() { _ = never.Close() }()
-	if res, err := d.Exec(ctx, sb, Command{Argv: []string{"true"}, Stdin: stdin}); err != nil || res.ExitCode != 0 {
-		t.Fatalf("Exec with input that never comes: %+v, %v", res, err)
+	if res, err := d.Execute(ctx, sb, Command{Argv: []string{"true"}, Stdin: stdin}); err != nil || res.ExitCode != 0 {
+		t.Fatalf("Execute with input that never comes: %+v, %v", res, err)
 	}
 }
 
@@ -366,7 +366,7 @@ type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
-func TestExecOutputWriteError(t *testing.T) {
+func TestExecuteOutputWriteError(t *testing.T) {
 	f := newFake()
 	f.execute = func(_ context.Context, stream *connect.BidiStream[workspacev1.ExecuteRequest, workspacev1.ExecuteResponse]) error {
 		if _, err := stream.Receive(); err != nil {
@@ -388,7 +388,7 @@ func TestExecOutputWriteError(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	res, err := d.Exec(ctx, sb, Command{Argv: []string{"yes"}, Stdout: failingWriter{}})
+	res, err := d.Execute(ctx, sb, Command{Argv: []string{"yes"}, Stdout: failingWriter{}})
 	if err == nil || !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("err = %v, want the write error", err)
 	}

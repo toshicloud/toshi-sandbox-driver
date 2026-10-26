@@ -12,46 +12,46 @@ import (
 	"connectrpc.com/connect"
 	workspacev1 "github.com/toshicloud/toshi-api/workspacev1"
 	"github.com/toshicloud/toshi-api/workspacev1/workspacev1connect"
-	toshi "github.com/toshicloud/toshi-go"
+	toshi "go.toshicloud.io/toshi"
 )
 
 // fake serves the calls the driver makes from one in-memory sandbox. Its
 // Execute is set per test.
 type fake struct {
-	workspacev1connect.UnimplementedWorkspaceServiceHandler
+	workspacev1connect.UnimplementedWorkloadServiceHandler
 	workspacev1connect.UnimplementedProjectServiceHandler
 
 	mu       sync.Mutex
 	projects []*workspacev1.Project
-	creates  []*workspacev1.CreateWorkloadRequest
-	waits    []*workspacev1.WaitWorkloadRequest
-	patches  []*workspacev1.PatchWorkloadRequest
+	creates  []*workspacev1.CreateSandboxRequest
+	waits    []*workspacev1.WaitSandboxRequest
+	updates  []*workspacev1.UpdateSandboxRequest
 	cancels  []*workspacev1.CancelExecutionRequest
-	sandbox  *workspacev1.Workload
-	// waitState is the state WaitWorkload reaches.
-	waitState workspacev1.WorkloadState
+	sandbox  *workspacev1.Sandbox
+	// waitState is the state WaitSandbox reaches.
+	waitState workspacev1.SandboxState
 	// cancelled is closed by the first CancelExecution.
 	cancelled chan struct{}
 	execute   func(context.Context, *connect.BidiStream[workspacev1.ExecuteRequest, workspacev1.ExecuteResponse]) error
 
-	// workloads are listed by ListWorkloads, one per page, after the
-	// sandbox; listCursor is the list's position.
-	workloads  []*workspacev1.Workload
+	// sandboxes are listed by ListSandboxes, one per page, after the
+	// sandbox created first; listCursor is the list's position.
+	sandboxes  []*workspacev1.Sandbox
 	listCursor string
-	lists      []*workspacev1.ListWorkloadsRequest
+	lists      []*workspacev1.ListSandboxesRequest
 	// events are the event log, each with its cursor; ListEvents returns
 	// two a page.
 	events     []*workspacev1.Event
 	eventLists []*workspacev1.ListEventsRequest
-	// changes are what WatchWorkloads sends after its cursor, by cursor,
+	// changes are what WatchSandboxes sends after its cursor, by cursor,
 	// once holdChanges, when set, is closed.
-	changes     []*workspacev1.WatchWorkloadsResponse
+	changes     []*workspacev1.WatchSandboxesResponse
 	holdChanges chan struct{}
 	watches     []string
 	// operation is the delete's; WaitOperation finishes it with opError.
 	operation *workspacev1.Operation
 	opError   *workspacev1.Error
-	deletes   []*workspacev1.DeleteWorkloadRequest
+	deletes   []*workspacev1.DeleteSandboxRequest
 	opCalls   []string
 }
 
@@ -61,7 +61,7 @@ func newFake() *fake {
 			Name:         "default",
 			Environments: []*workspacev1.ProjectEnvironment{{Name: "production"}},
 		}},
-		waitState: workspacev1.WorkloadState_WORKLOAD_STATE_RUNNING,
+		waitState: workspacev1.SandboxState_SANDBOX_STATE_RUNNING,
 		cancelled: make(chan struct{}),
 	}
 }
@@ -72,49 +72,48 @@ func (f *fake) ListProjects(context.Context, *connect.Request[workspacev1.ListPr
 	return connect.NewResponse(&workspacev1.ListProjectsResponse{Projects: f.projects}), nil
 }
 
-// CreateWorkload creates the one sandbox, or returns it for a repeated key.
-func (f *fake) CreateWorkload(_ context.Context, req *connect.Request[workspacev1.CreateWorkloadRequest]) (*connect.Response[workspacev1.CreateWorkloadResponse], error) {
+// CreateSandbox creates the one sandbox, or returns it for a repeated key.
+func (f *fake) CreateSandbox(_ context.Context, req *connect.Request[workspacev1.CreateSandboxRequest]) (*connect.Response[workspacev1.CreateSandboxResponse], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.creates = append(f.creates, req.Msg)
 	if f.sandbox == nil {
-		f.sandbox = &workspacev1.Workload{
+		f.sandbox = &workspacev1.Sandbox{
 			Id:          "wl-1",
-			Kind:        workspacev1.WorkloadKind_WORKLOAD_KIND_SANDBOX,
 			Project:     req.Msg.GetProject(),
 			Environment: req.Msg.GetEnvironment(),
 			Labels:      maps.Clone(req.Msg.GetLabels()),
-			Status:      &workspacev1.WorkloadStatus{State: workspacev1.WorkloadState_WORKLOAD_STATE_CREATED},
+			Status:      &workspacev1.SandboxStatus{State: workspacev1.SandboxState_SANDBOX_STATE_CREATED},
 		}
 	}
-	return connect.NewResponse(&workspacev1.CreateWorkloadResponse{Workload: f.sandbox}), nil
+	return connect.NewResponse(&workspacev1.CreateSandboxResponse{Sandbox: f.sandbox}), nil
 }
 
-// WaitWorkload moves the sandbox to waitState and answers at once.
-func (f *fake) WaitWorkload(_ context.Context, req *connect.Request[workspacev1.WaitWorkloadRequest]) (*connect.Response[workspacev1.WaitWorkloadResponse], error) {
+// WaitSandbox moves the sandbox to waitState and answers at once.
+func (f *fake) WaitSandbox(_ context.Context, req *connect.Request[workspacev1.WaitSandboxRequest]) (*connect.Response[workspacev1.WaitSandboxResponse], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.waits = append(f.waits, req.Msg)
 	f.sandbox.Status.State = f.waitState
-	return connect.NewResponse(&workspacev1.WaitWorkloadResponse{Workload: f.sandbox, Reached: true}), nil
+	return connect.NewResponse(&workspacev1.WaitSandboxResponse{Sandbox: f.sandbox, Reached: true}), nil
 }
 
-func (f *fake) GetWorkload(_ context.Context, req *connect.Request[workspacev1.GetWorkloadRequest]) (*connect.Response[workspacev1.GetWorkloadResponse], error) {
+func (f *fake) GetSandbox(_ context.Context, req *connect.Request[workspacev1.GetSandboxRequest]) (*connect.Response[workspacev1.GetSandboxResponse], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sandbox == nil || req.Msg.GetId() != f.sandbox.GetId() {
 		return nil, connect.NewError(connect.CodeNotFound, nil)
 	}
-	return connect.NewResponse(&workspacev1.GetWorkloadResponse{Workload: f.sandbox}), nil
+	return connect.NewResponse(&workspacev1.GetSandboxResponse{Sandbox: f.sandbox}), nil
 }
 
-// PatchWorkload replaces the labels, as the server does.
-func (f *fake) PatchWorkload(_ context.Context, req *connect.Request[workspacev1.PatchWorkloadRequest]) (*connect.Response[workspacev1.PatchWorkloadResponse], error) {
+// UpdateSandbox replaces the labels, as the server does.
+func (f *fake) UpdateSandbox(_ context.Context, req *connect.Request[workspacev1.UpdateSandboxRequest]) (*connect.Response[workspacev1.UpdateSandboxResponse], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.patches = append(f.patches, req.Msg)
-	f.sandbox.Labels = maps.Clone(req.Msg.GetWorkload().GetLabels())
-	return connect.NewResponse(&workspacev1.PatchWorkloadResponse{Workload: f.sandbox}), nil
+	f.updates = append(f.updates, req.Msg)
+	f.sandbox.Labels = maps.Clone(req.Msg.GetSandbox().GetLabels())
+	return connect.NewResponse(&workspacev1.UpdateSandboxResponse{Sandbox: f.sandbox}), nil
 }
 
 func (f *fake) CancelExecution(_ context.Context, req *connect.Request[workspacev1.CancelExecutionRequest]) (*connect.Response[workspacev1.CancelExecutionResponse], error) {
@@ -131,31 +130,31 @@ func (f *fake) Execute(ctx context.Context, stream *connect.BidiStream[workspace
 	return f.execute(ctx, stream)
 }
 
-// ListWorkloads returns the workloads carrying every label asked for, one
+// ListSandboxes returns the sandboxes carrying every label asked for, one
 // a page.
-func (f *fake) ListWorkloads(_ context.Context, req *connect.Request[workspacev1.ListWorkloadsRequest]) (*connect.Response[workspacev1.ListWorkloadsResponse], error) {
+func (f *fake) ListSandboxes(_ context.Context, req *connect.Request[workspacev1.ListSandboxesRequest]) (*connect.Response[workspacev1.ListSandboxesResponse], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lists = append(f.lists, req.Msg)
-	var match []*workspacev1.Workload
-	for _, wl := range f.workloads {
+	var match []*workspacev1.Sandbox
+	for _, sb := range f.sandboxes {
 		ok := true
 		for k, v := range req.Msg.GetLabels() {
-			if wl.GetLabels()[k] != v {
+			if sb.GetLabels()[k] != v {
 				ok = false
 			}
 		}
 		if ok {
-			match = append(match, wl)
+			match = append(match, sb)
 		}
 	}
 	page := 0
 	if t := req.Msg.GetPageToken(); t != "" {
 		page = int(t[0] - '0')
 	}
-	resp := &workspacev1.ListWorkloadsResponse{Cursor: f.listCursor}
+	resp := &workspacev1.ListSandboxesResponse{Cursor: f.listCursor}
 	if page < len(match) {
-		resp.Workloads = match[page : page+1]
+		resp.Sandboxes = match[page : page+1]
 	}
 	if page+1 < len(match) {
 		resp.NextPageToken = string(rune('0' + page + 1))
@@ -178,22 +177,27 @@ func (f *fake) ListEvents(_ context.Context, req *connect.Request[workspacev1.Li
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.eventLists = append(f.eventLists, req.Msg)
-	i := f.after(req.Msg.GetCursor())
-	page := f.events[i:min(i+2, len(f.events))]
-	cursor := req.Msg.GetCursor()
+	i := f.after(req.Msg.GetPageToken())
+	end := min(i+2, len(f.events))
+	page := f.events[i:end]
+	cursor := req.Msg.GetPageToken()
 	if len(page) > 0 {
 		cursor = page[len(page)-1].GetCursor()
 	}
-	return connect.NewResponse(&workspacev1.ListEventsResponse{Events: page, Cursor: cursor}), nil
+	resp := &workspacev1.ListEventsResponse{Events: page, Cursor: cursor}
+	if end < len(f.events) {
+		resp.NextPageToken = cursor
+	}
+	return connect.NewResponse(resp), nil
 }
 
-// WatchWorkloads sends the changes after the cursor and holds the stream
+// WatchSandboxes sends the changes after the cursor and holds the stream
 // open.
-func (f *fake) WatchWorkloads(ctx context.Context, req *connect.Request[workspacev1.WatchWorkloadsRequest], stream *connect.ServerStream[workspacev1.WatchWorkloadsResponse]) error {
+func (f *fake) WatchSandboxes(ctx context.Context, req *connect.Request[workspacev1.WatchSandboxesRequest], stream *connect.ServerStream[workspacev1.WatchSandboxesResponse]) error {
 	f.mu.Lock()
-	f.watches = append(f.watches, "workloads "+req.Msg.GetCursor())
+	f.watches = append(f.watches, "sandboxes "+req.Msg.GetCursor())
 	hold := f.holdChanges
-	var send []*workspacev1.WatchWorkloadsResponse
+	var send []*workspacev1.WatchSandboxesResponse
 	for _, c := range f.changes {
 		if c.GetCursor() > req.Msg.GetCursor() {
 			send = append(send, c)
@@ -231,14 +235,14 @@ func (f *fake) WatchEvents(ctx context.Context, req *connect.Request[workspacev1
 	return ctx.Err()
 }
 
-func (f *fake) DeleteWorkload(_ context.Context, req *connect.Request[workspacev1.DeleteWorkloadRequest]) (*connect.Response[workspacev1.DeleteWorkloadResponse], error) {
+func (f *fake) DeleteSandbox(_ context.Context, req *connect.Request[workspacev1.DeleteSandboxRequest]) (*connect.Response[workspacev1.DeleteSandboxResponse], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deletes = append(f.deletes, req.Msg)
 	if f.operation == nil {
 		f.operation = &workspacev1.Operation{Id: "op-1", WorkloadId: req.Msg.GetId()}
 	}
-	return connect.NewResponse(&workspacev1.DeleteWorkloadResponse{Operation: f.operation}), nil
+	return connect.NewResponse(&workspacev1.DeleteSandboxResponse{Operation: f.operation}), nil
 }
 
 func (f *fake) GetOperation(_ context.Context, req *connect.Request[workspacev1.GetOperationRequest]) (*connect.Response[workspacev1.GetOperationResponse], error) {
@@ -258,19 +262,19 @@ func (f *fake) WaitOperation(_ context.Context, req *connect.Request[workspacev1
 }
 
 // calls returns copies of the requests f received.
-func (f *fake) calls() (creates []*workspacev1.CreateWorkloadRequest, waits []*workspacev1.WaitWorkloadRequest, patches []*workspacev1.PatchWorkloadRequest, cancels []*workspacev1.CancelExecutionRequest) {
+func (f *fake) calls() (creates []*workspacev1.CreateSandboxRequest, waits []*workspacev1.WaitSandboxRequest, updates []*workspacev1.UpdateSandboxRequest, cancels []*workspacev1.CancelExecutionRequest) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return slices.Clone(f.creates), slices.Clone(f.waits), slices.Clone(f.patches), slices.Clone(f.cancels)
+	return slices.Clone(f.creates), slices.Clone(f.waits), slices.Clone(f.updates), slices.Clone(f.cancels)
 }
 
-// states returns the LabelState values the patches set, in order.
+// states returns the LabelState values the updates set, in order.
 func (f *fake) states() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []string
-	for _, p := range f.patches {
-		out = append(out, p.GetWorkload().GetLabels()[LabelState])
+	for _, u := range f.updates {
+		out = append(out, u.GetSandbox().GetLabels()[LabelState])
 	}
 	return out
 }
@@ -280,7 +284,7 @@ func (f *fake) states() []string {
 func newTestDriver(t *testing.T, f *fake, cfg Config) *Driver {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.Handle(workspacev1connect.NewWorkspaceServiceHandler(f))
+	mux.Handle(workspacev1connect.NewWorkloadServiceHandler(f))
 	mux.Handle(workspacev1connect.NewProjectServiceHandler(f))
 	server := httptest.NewUnstartedServer(mux)
 	server.EnableHTTP2 = true

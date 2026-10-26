@@ -148,13 +148,13 @@ target = 1
 		"--ca-file", caPath,
 		"--secret-file", webhookPath,
 		"--installation", installationID,
-		"--repo", account+"/app",
+		"--repository", account+"/app",
 		"--event", "installation",
 		"--action", "created",
 	)
 	waitTenant(t, cfg.bin, operatorEnv, installationID, 30*time.Second)
-	token := strings.TrimSpace(run(t, operatorEnv, cfg.bin, "tokens", "create",
-		"--tenant", installationID,
+	token := strings.TrimSpace(run(t, operatorEnv, cfg.bin, "token", "create",
+		"--workspace", installationID,
 		"--name", "sandbox-driver-e2e",
 		"--project", projectName,
 	))
@@ -325,7 +325,7 @@ func waitTenant(t *testing.T, bin string, env map[string]string, tenant string, 
 	deadline := time.Now().Add(timeout)
 	var last string
 	for time.Now().Before(deadline) {
-		out, _ := runCommand(bin, env, "tenants", "list", "--json")
+		out, _ := runCommand(bin, env, "workspace", "list", "--json")
 		last = out
 		var payload struct {
 			Tenants []struct {
