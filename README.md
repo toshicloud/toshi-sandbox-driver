@@ -2,8 +2,10 @@
 
 A Go program that runs sandboxes on Toshi for an agent orchestrator. It
 uses only the public Workspace API, `toshi.workspace.v1`, through the
-[toshi-go](https://github.com/toshicloud/toshi-go) client, and imports
-no other Toshi module but toshi-api.
+[toshi-go](https://pkg.go.dev/go.toshicloud.io/toshi) client,
+`go.toshicloud.io/toshi`, and imports no other Toshi module but toshi-api.
+Before v0.2.0 that client was the module
+[github.com/toshicloud/toshi-go](https://github.com/toshicloud/toshi-go).
 
 A sandbox is a VM that runs until its owner stops it or its maximum
 duration passes. The driver:
@@ -32,7 +34,7 @@ sb, err := d.Create(ctx, "task-42", driver.Spec{Size: "toshi-linux-2x", MaxDurat
 // ...
 if err := d.WaitRunning(ctx, sb); err != nil { /* it ended instead, or ctx ended */ }
 
-res, err := d.Exec(ctx, sb, driver.Command{
+res, err := d.Execute(ctx, sb, driver.Command{
 	Argv:    []string{"sh", "-c", "make test"},
 	Stdin:   input,
 	Stdout:  os.Stdout,
@@ -51,7 +53,7 @@ After a restart:
 ```go
 rec, err := d.Recover(ctx, stored) // stored: the last cursor saved, or ""
 // rec.Sandboxes, rec.Events, rec.Cursor
-err = d.Follow(ctx, rec.Cursor, func(u driver.Update) error {
+err = d.Watch(ctx, rec.Cursor, func(u driver.Update) error {
 	// u.Sandbox changed, or u.Event happened. Handle it, then save
 	// u.Cursor if it is set: only events carry one.
 	return nil
@@ -71,43 +73,42 @@ err = d.Follow(ctx, rec.Cursor, func(u driver.Update) error {
 - `WaitRunning` waits until the sandbox runs and reads it; it fails if
   the sandbox ended instead. It has no bound of its own, so give `ctx` a
   deadline.
-- `Exec` runs a command, feeding `Stdin` and streaming its output, and
+- `Execute` runs a command, feeding `Stdin` and streaming its output, and
   cancels it with `CancelExecution` when `Timeout` passes. A non-zero
   exit is a result, not an error. A read of `Stdin` that fails before the
-  command ended closes its input and fails `Exec`.
+  command ended closes its input and fails `Execute`.
 - The state label is `starting` after `Create`, `ready` once
   `WaitRunning` has seen the sandbox run and between commands, and `busy`
   while a command runs. When `Execute` fails or its stream is lost, the
   driver cannot always tell whether the command started or still runs, so
   the label stays `busy`, and `WaitRunning` leaves it so.
 - `Recover` lists the sandboxes labelled with the driver's name with
-  `ListWorkloads`. Given the cursor saved by an earlier run, it reads the
+  `Sandboxes.List`. Given the cursor saved by an earlier run, it reads the
   events after it with `ListEvents` and keeps the execution and emitted
   events of the driver's sandboxes, and the delete events of those deleted
-  since. Each workload event carries the workload after its change, and
+  since. Each sandbox event carries the sandbox after its change, and
   `Recover` applies them in order to the list, so `rec.Sandboxes` holds
   the sandboxes as they are at `rec.Cursor`, including one created after
-  the list was read. A workload is the driver's when it is a sandbox and
-  carries the driver's label; a job with the label is not. Given `""`, on a
-  first start, it reads no events and returns the list's position. A
-  cursor the server no longer keeps fails with `OUT_OF_RANGE`; start again
-  with `""`.
-- `Follow` follows from `rec.Cursor` with `WatchWorkloads` and
+  the list was read. A sandbox is the driver's when it carries the
+  driver's label. Given `""`, on a first start, it reads no events and
+  returns the list's position. A cursor the server no longer keeps fails
+  with `OUT_OF_RANGE`; start again with `""`.
+- `Watch` follows from `rec.Cursor` with `Sandboxes.Watch` and
   `WatchEvents`, each resuming after a dropped connection, and calls the
   function with one update at a time. Neither call filters by label, so
   the driver keeps the changes of its sandboxes, and the events of those
-  `Recover` returned or whose workload events in `WatchEvents`, which come
+  `Recover` returned or whose sandbox events in `WatchEvents`, which come
   before their executions', show them as its own. The two watches are not
   ordered with each other: an execution's event can come before the change
   that shows its sandbox. Only event updates carry a cursor; save it
   after the event is handled. The server delivers at least once, so after
   a restart an event can come again with the same `Event.Id`: handle it
-  idempotently or drop the repeat. `Follow` returns when `ctx` ends, a
+  idempotently or drop the repeat. `Watch` returns when `ctx` ends, a
   watch ends or the function returns an error. A watch ends when
   toshi-go's reconnect attempts run out (its retry policy's `MaxAttempts`,
   five by default);
-  then `Recover` from the saved cursor and `Follow` again.
-- `Delete` deletes the sandbox with `DeleteWorkload`, under a request key
+  then `Recover` from the saved cursor and `Watch` again.
+- `Delete` deletes the sandbox with `Sandboxes.Delete`, under a request key
   from the scope and the two names, and returns the delete's operation;
   `WaitOperation` reads it with `GetOperation` and waits with
   `WaitOperation` until it is done, and fails if the operation failed.
@@ -150,7 +151,7 @@ script, configuration in `.golangci.yml`) and the unit tests.
 
 `e2e/` runs steps 1 to 8 against a served Toshi, a second driver
 recovering the first one's sandbox from a saved cursor, and fails unless
-the driver made `ListProjects` and every `WorkspaceService` call but
+the driver made `ListProjects` and every `WorkloadService` call but
 `WatchOutput`. The served Toshi is `toshi serve` with its
 all-in-one agent, which runs the sandbox in a qemu VM. It needs KVM and
 a guest image, so it skips itself unless `TOSHI_DRIVER_E2E_BIN` is set,
@@ -175,8 +176,8 @@ stack's logs.
 
 ## Versions
 
-`go.mod` pins toshi-go to one commit. Moving to another commit, or to a
-release once one exists, is one pull request that changes `go.mod` and
+`go.mod` pins toshi-go and toshi-api to one version each. Moving either
+to another version is one pull request that changes `go.mod` and
 `go.sum`.
 
 ## Licence

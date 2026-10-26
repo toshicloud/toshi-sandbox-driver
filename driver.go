@@ -1,5 +1,5 @@
 // Package driver runs sandboxes on Toshi for an agent orchestrator, over
-// the public Workspace API through the toshi-go client.
+// the public Workspace API through the Toshi Go client.
 package driver
 
 import (
@@ -9,7 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 	workspacev1 "github.com/toshicloud/toshi-api/workspacev1"
-	toshi "github.com/toshicloud/toshi-go"
+	toshi "go.toshicloud.io/toshi"
 )
 
 // Driver holds the client and the scope its sandboxes run in.
@@ -19,7 +19,7 @@ type Driver struct {
 
 	mu sync.Mutex
 	// known holds the IDs of the driver's sandboxes that Recover listed or
-	// the event log showed, so Recover and Follow pass on only their events.
+	// the event log showed, so Recover and Watch pass on only their events.
 	known map[string]bool
 }
 
@@ -41,7 +41,7 @@ func New(cfg Config, opts ...toshi.Option) (*Driver, error) {
 // Check confirms with ListProjects that the token sees the configured
 // project and that the project has the configured environment.
 func (d *Driver) Check(ctx context.Context) error {
-	resp, err := d.client.Projects.ListProjects(ctx, connect.NewRequest(&workspacev1.ListProjectsRequest{}))
+	resp, err := d.client.Project.ListProjects(ctx, connect.NewRequest(&workspacev1.ListProjectsRequest{}))
 	if err != nil {
 		return fmt.Errorf("driver: list projects: %w", err)
 	}

@@ -10,7 +10,6 @@ import (
 	"maps"
 	"time"
 
-	"connectrpc.com/connect"
 	workspacev1 "github.com/toshicloud/toshi-api/workspacev1"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
@@ -38,7 +37,7 @@ const (
 	StateBusy = "busy"
 )
 
-// waitBound is how long one WaitWorkload call asks the server to wait.
+// waitBound is how long one WaitSandbox call asks the server to wait.
 // toshi-go asks again until the sandbox reaches a state or the context ends.
 const waitBound = 30 * time.Second
 
@@ -55,22 +54,23 @@ type Spec struct {
 type Sandbox struct {
 	// Name is the name the driver's caller gave it.
 	Name string
-	// Workload is the workload as the latest call returned it.
-	Workload *workspacev1.Workload
+	// Sandbox is the sandbox as the latest call returned it.
+	Sandbox *workspacev1.Sandbox
 }
 
 // ID returns the sandbox's workload ID.
-func (s *Sandbox) ID() string { return s.Workload.GetId() }
+func (s *Sandbox) ID() string { return s.Sandbox.GetId() }
 
 // State returns the driver's state for the sandbox, from its label.
-func (s *Sandbox) State() string { return s.Workload.GetLabels()[LabelState] }
+func (s *Sandbox) State() string { return s.Sandbox.GetLabels()[LabelState] }
 
-// Create creates the sandbox called name, labelled with the driver's name,
-// the sandbox's name and StateStarting. Its request key is derived from the
-// scope and the two names, so a call repeated with the same spec after a
-// lost answer or a restart returns the sandbox the first call created
-// instead of creating another; a name is therefore used for one sandbox
-// only. The same name with another spec fails with FAILED_PRECONDITION.
+// Create creates the sandbox called name with Sandboxes.Create, labelled
+// with the driver's name, the sandbox's name and StateStarting. Its request
+// key is derived from the scope and the two names, so a call repeated with
+// the same spec after a lost answer or a restart returns the sandbox the
+// first call created instead of creating another; a name is therefore used
+// for one sandbox only. The same name with another spec fails with
+// FAILED_PRECONDITION.
 func (d *Driver) Create(ctx context.Context, name string, spec Spec) (*Sandbox, error) {
 	if name == "" {
 		return nil, errors.New("driver: a sandbox needs a name")
@@ -81,22 +81,22 @@ func (d *Driver) Create(ctx context.Context, name string, spec Spec) (*Sandbox, 
 	case spec.MaxDuration%time.Minute != 0:
 		return nil, fmt.Errorf("driver: sandbox %q: the maximum duration %s is not a whole number of minutes", name, spec.MaxDuration)
 	}
-	resp, err := d.client.Workspace.CreateWorkload(ctx, connect.NewRequest(&workspacev1.CreateWorkloadRequest{
-		Spec: &workspacev1.CreateWorkloadRequest_Sandbox{Sandbox: &workspacev1.SandboxSpec{
+	resp, err := d.client.Workload.Sandboxes.Create(ctx, &workspacev1.CreateSandboxRequest{
+		Spec: &workspacev1.SandboxSpec{
 			Size:        spec.Size,
 			MaxDuration: durationpb.New(spec.MaxDuration),
-		}},
+		},
 		Labels: map[string]string{
 			LabelDriver:  d.cfg.Name,
 			LabelSandbox: name,
 			LabelState:   StateStarting,
 		},
 		RequestKey: d.requestKey("sandbox", name),
-	}))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("driver: create sandbox %q: %w", name, err)
 	}
-	return &Sandbox{Name: name, Workload: resp.Msg.GetWorkload()}, nil
+	return &Sandbox{Name: name, Sandbox: resp.GetSandbox()}, nil
 }
 
 // requestKey is the request key of a call on the sandbox called name: the
@@ -115,25 +115,25 @@ func (d *Driver) requestKey(prefix, name string) string {
 	return prefix + "-" + hex.EncodeToString(sum[:16])
 }
 
-// WaitRunning waits with WaitWorkload until the sandbox runs or ends, reads
-// it with GetWorkload, and records it as StateReady. A sandbox recorded as
-// StateBusy stays so: a command Exec lost track of may still run in it. It
-// fails when the sandbox is not running. It has no bound of its own: ctx ends a wait for a
-// sandbox that stays queued.
+// WaitRunning waits with WaitSandbox until the sandbox runs or ends, reads
+// it with GetSandbox, and records it as StateReady. A sandbox recorded as
+// StateBusy stays so: a command Execute lost track of may still run in it.
+// It fails when the sandbox is not running. It has no bound of its own: ctx
+// ends a wait for a sandbox that stays queued.
 func (d *Driver) WaitRunning(ctx context.Context, sb *Sandbox) error {
-	if _, err := d.client.WaitWorkload(ctx, &workspacev1.WaitWorkloadRequest{
+	if _, err := d.client.Workload.Sandboxes.Wait(ctx, &workspacev1.WaitSandboxRequest{
 		Id:      sb.ID(),
-		States:  []workspacev1.WorkloadState{workspacev1.WorkloadState_WORKLOAD_STATE_RUNNING, workspacev1.WorkloadState_WORKLOAD_STATE_ENDED},
+		States:  []workspacev1.SandboxState{workspacev1.SandboxState_SANDBOX_STATE_RUNNING, workspacev1.SandboxState_SANDBOX_STATE_ENDED},
 		Timeout: durationpb.New(waitBound),
 	}); err != nil {
 		return fmt.Errorf("driver: wait for sandbox %s: %w", sb.ID(), err)
 	}
-	resp, err := d.client.Workspace.GetWorkload(ctx, connect.NewRequest(&workspacev1.GetWorkloadRequest{Id: sb.ID()}))
+	resp, err := d.client.Workload.Sandboxes.Get(ctx, &workspacev1.GetSandboxRequest{Id: sb.ID()})
 	if err != nil {
 		return fmt.Errorf("driver: get sandbox %s: %w", sb.ID(), err)
 	}
-	sb.Workload = resp.Msg.GetWorkload()
-	if status := sb.Workload.GetStatus(); status.GetState() != workspacev1.WorkloadState_WORKLOAD_STATE_RUNNING {
+	sb.Sandbox = resp.GetSandbox()
+	if status := sb.Sandbox.GetStatus(); status.GetState() != workspacev1.SandboxState_SANDBOX_STATE_RUNNING {
 		return fmt.Errorf("driver: sandbox %s is %s, not running (end reason %s, stop reason %s)",
 			sb.ID(), status.GetState(), status.GetEndReason(), status.GetStopReason())
 	}
@@ -144,22 +144,22 @@ func (d *Driver) WaitRunning(ctx context.Context, sb *Sandbox) error {
 }
 
 // setState records state in the sandbox's LabelState label with
-// PatchWorkload. A patch replaces all labels, so it sends the sandbox's
+// UpdateSandbox. A patch replaces all labels, so it sends the sandbox's
 // labels as last read with that one changed.
 func (d *Driver) setState(ctx context.Context, sb *Sandbox, state string) error {
-	labels := maps.Clone(sb.Workload.GetLabels())
+	labels := maps.Clone(sb.Sandbox.GetLabels())
 	if labels == nil {
 		labels = make(map[string]string, 1)
 	}
 	labels[LabelState] = state
-	resp, err := d.client.Workspace.PatchWorkload(ctx, connect.NewRequest(&workspacev1.PatchWorkloadRequest{
+	resp, err := d.client.Workload.Sandboxes.Update(ctx, &workspacev1.UpdateSandboxRequest{
 		Id:         sb.ID(),
-		Workload:   &workspacev1.Workload{Labels: labels},
+		Sandbox:    &workspacev1.Sandbox{Labels: labels},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
-	}))
+	})
 	if err != nil {
 		return fmt.Errorf("driver: record sandbox %s as %s: %w", sb.ID(), state, err)
 	}
-	sb.Workload = resp.Msg.GetWorkload()
+	sb.Sandbox = resp.GetSandbox()
 	return nil
 }
