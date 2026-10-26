@@ -67,7 +67,7 @@ op, err := d.Delete(ctx, sb)
 if err != nil {
 	log.Fatal(err)
 }
-op, err = d.WaitOperation(ctx, op.GetId())
+op, err = d.WaitOperation(ctx, op.ID)
 if err != nil {
 	log.Fatal(err)
 }
@@ -134,7 +134,7 @@ if err != nil {
   ordered with each other: an execution's event can come before the change
   that shows its sandbox. Only event updates carry a cursor; save it
   after the event is handled. The server delivers at least once, so after
-  a restart an event can come again with the same `Event.Id`: handle it
+  a restart an event can come again with the same `Event.Cursor`: handle it
   idempotently or drop the repeat. `Watch` returns when `ctx` ends, a
   watch ends or the function returns an error. A watch ends when
   toshi-go's reconnect attempts run out (its retry policy's `MaxAttempts`,
@@ -143,7 +143,46 @@ if err != nil {
 - `Delete` deletes the sandbox with `Sandboxes.Delete`, under a request key
   from the scope and the two names, and returns the delete's operation;
   `WaitOperation` reads it with `GetOperation` and waits with
-  `WaitOperation` until it is done, and fails if the operation failed.
+  `WaitOperation` until it is done, and sets its `Err` if the operation
+  failed.
+
+## Types
+
+The exported types carry the API's data without naming its generated
+messages, so a caller needs the API module only for a field the driver does
+not carry.
+
+- `Sandbox` is one sandbox as the driver last read it: `Name`, as the
+  caller gave it; `ID`; `State`, the driver's own state from its label;
+  `Labels`, a copy; and `Proto` for the whole message.
+- `Operation` is a long-running action such as a delete: `ID`, `Done`, and
+  `Err`, which holds the server's message when the operation failed.
+- `Event` is one event of the driver's sandboxes: `Type`, `SandboxID`,
+  `Time`, `Cursor`, the position after it, and the payload of its family:
+  `Execution` for an execution event and `Emitted` for one a guest
+  emitted, nil for another event.
+- `ExecutionEvent` is an execution starting or ending: `ExecutionID`,
+  `Argv`, `ExitCode` (-1 when it ended without one) and `Cancelled`.
+- `EmittedEvent` is an event a guest emitted: `Data`.
+- `EventType` is the driver's own type, with one constant per event type
+  the driver reports: `EventWorkloadCreated`,
+  `EventWorkloadStateChanged`, `EventWorkloadUpdated`,
+  `EventWorkloadDeleted`, `EventExecutionStarted`, `EventExecutionEnded`
+  and `EventEmitted`. An event of another type is dropped.
+- `Proto` on `Sandbox`, `Operation` and `Event` returns the generated
+  message, for code that needs a field the driver does not carry.
+
+## Upgrading
+
+The exported types no longer name the API's generated messages.
+`Sandbox`'s `Sandbox` field is gone: read a sandbox with `ID`, `State`,
+`Labels` and `Proto`. `Delete` and `WaitOperation` return an `Operation`,
+so the ID is `Operation.ID` and a failed operation sets `Operation.Err`
+instead of returning an error. `Recovery.Events` is `[]*Event` and
+`Update.Type` is an `EventType`; an event's generated fields are the
+driver's own, with `Execution` and `Emitted` holding the typed payload.
+`Proto()` returns the generated message where a field the driver does not
+carry is needed.
 
 ## Configuration
 
