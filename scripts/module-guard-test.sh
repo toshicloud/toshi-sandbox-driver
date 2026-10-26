@@ -14,13 +14,13 @@ export GOWORK=off GOFLAGS=
 
 # fixture creates a module named $1 that replaces the module $2 (default
 # github.com/toshicloud/other) with a local stand-in, and prints its
-# directory.
+# directory. $3 names the fixture's own module (default example.com/fixture).
 fixture() {
-  local dir="$tmp/$1" other="${2:-github.com/toshicloud/other}"
+  local dir="$tmp/$1" other="${2:-github.com/toshicloud/other}" self="${3:-example.com/fixture}"
   mkdir -p "$dir/other/probe"
   printf 'module %s\n\ngo 1.25.0\n' "$other" >"$dir/other/go.mod"
   printf 'package probe\n' >"$dir/other/probe/probe.go"
-  printf 'module example.com/fixture\n\ngo 1.25.0\n\nrequire %s v0.0.0\n\nreplace %s => ./other\n' "$other" "$other" >"$dir/go.mod"
+  printf 'module %s\n\ngo 1.25.0\n\nrequire %s v0.0.0\n\nreplace %s => ./other\n' "$self" "$other" "$other" >"$dir/go.mod"
   printf 'package fixture\n' >"$dir/fixture.go"
   echo "$dir"
 }
@@ -48,6 +48,10 @@ refused='the module depends on a github.com/toshicloud or go.toshicloud.io modul
 import='import _ "github.com/toshicloud/other/probe"'
 
 dir="$(fixture clean)"
+expect 0 "$dir"
+
+dir="$(fixture own-test-package github.com/toshicloud/other github.com/toshicloud/self)"
+printf 'package fixture_test\n' >"$dir/fixture_test.go"
 expect 0 "$dir"
 
 dir="$(fixture test-import)"
