@@ -54,15 +54,22 @@ type Spec struct {
 type Sandbox struct {
 	// Name is the name the driver's caller gave it.
 	Name string
-	// Sandbox is the sandbox as the latest call returned it.
-	Sandbox *workspacev1.Sandbox
+
+	sandbox *workspacev1.Sandbox
 }
 
 // ID returns the sandbox's workload ID.
-func (s *Sandbox) ID() string { return s.Sandbox.GetId() }
+func (s *Sandbox) ID() string { return s.sandbox.GetId() }
 
 // State returns the driver's state for the sandbox, from its label.
-func (s *Sandbox) State() string { return s.Sandbox.GetLabels()[LabelState] }
+func (s *Sandbox) State() string { return s.sandbox.GetLabels()[LabelState] }
+
+// Labels returns a copy of the sandbox's labels.
+func (s *Sandbox) Labels() map[string]string { return maps.Clone(s.sandbox.GetLabels()) }
+
+// Proto returns the sandbox as the API's message, for code that needs a field
+// the driver does not carry.
+func (s *Sandbox) Proto() *workspacev1.Sandbox { return s.sandbox }
 
 // Create creates the sandbox called name with Sandboxes.Create, labelled
 // with the driver's name, the sandbox's name and StateStarting. Its request
@@ -96,7 +103,7 @@ func (d *Driver) Create(ctx context.Context, name string, spec Spec) (*Sandbox, 
 	if err != nil {
 		return nil, fmt.Errorf("driver: create sandbox %q: %w", name, err)
 	}
-	return &Sandbox{Name: name, Sandbox: resp.GetSandbox()}, nil
+	return &Sandbox{Name: name, sandbox: resp.GetSandbox()}, nil
 }
 
 // requestKey is the request key of a call on the sandbox called name: the
@@ -132,8 +139,8 @@ func (d *Driver) WaitRunning(ctx context.Context, sb *Sandbox) error {
 	if err != nil {
 		return fmt.Errorf("driver: get sandbox %s: %w", sb.ID(), err)
 	}
-	sb.Sandbox = resp.GetSandbox()
-	if status := sb.Sandbox.GetStatus(); status.GetState() != workspacev1.SandboxState_SANDBOX_STATE_RUNNING {
+	sb.sandbox = resp.GetSandbox()
+	if status := sb.sandbox.GetStatus(); status.GetState() != workspacev1.SandboxState_SANDBOX_STATE_RUNNING {
 		return fmt.Errorf("driver: sandbox %s is %s, not running (end reason %s, stop reason %s)",
 			sb.ID(), status.GetState(), status.GetEndReason(), status.GetStopReason())
 	}
@@ -147,7 +154,7 @@ func (d *Driver) WaitRunning(ctx context.Context, sb *Sandbox) error {
 // UpdateSandbox. A patch replaces all labels, so it sends the sandbox's
 // labels as last read with that one changed.
 func (d *Driver) setState(ctx context.Context, sb *Sandbox, state string) error {
-	labels := maps.Clone(sb.Sandbox.GetLabels())
+	labels := maps.Clone(sb.sandbox.GetLabels())
 	if labels == nil {
 		labels = make(map[string]string, 1)
 	}
@@ -160,6 +167,6 @@ func (d *Driver) setState(ctx context.Context, sb *Sandbox, state string) error 
 	if err != nil {
 		return fmt.Errorf("driver: record sandbox %s as %s: %w", sb.ID(), state, err)
 	}
-	sb.Sandbox = resp.GetSandbox()
+	sb.sandbox = resp.GetSandbox()
 	return nil
 }

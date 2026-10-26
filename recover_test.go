@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	workspacev1 "go.toshicloud.io/api/workspacev1"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // sandboxOf returns a sandbox of driver, called name.
@@ -36,10 +37,10 @@ func sandboxEvent(cursor string, t workspacev1.EventType, sb *workspacev1.Sandbo
 }
 
 // cursors returns the events' cursors.
-func cursors(events []*workspacev1.Event) []string {
+func cursors(events []*Event) []string {
 	var out []string
 	for _, e := range events {
-		out = append(out, e.GetCursor())
+		out = append(out, e.Cursor)
 	}
 	return out
 }
@@ -195,8 +196,8 @@ func TestWatch(t *testing.T) {
 		case u.Sandbox != nil:
 			sandboxes = append(sandboxes, u.Sandbox.ID()+"/"+u.Sandbox.Name+" "+u.Type.String())
 		case u.Event != nil:
-			if u.Cursor != u.Event.GetCursor() {
-				t.Errorf("update cursor %q for event %q", u.Cursor, u.Event.GetCursor())
+			if u.Cursor != u.Event.Cursor {
+				t.Errorf("update cursor %q for event %q", u.Cursor, u.Event.Cursor)
 			}
 			events = append(events, u.Cursor)
 		}
@@ -208,7 +209,7 @@ func TestWatch(t *testing.T) {
 	if !errors.Is(err, stop) {
 		t.Fatalf("Watch = %v, want fn's error", err)
 	}
-	if !slices.Equal(sandboxes, []string{"wl-1/a EVENT_TYPE_WORKLOAD_UPDATED"}) || !slices.Equal(events, []string{"c5"}) {
+	if !slices.Equal(sandboxes, []string{"wl-1/a workload_updated"}) || !slices.Equal(events, []string{"c5"}) {
 		t.Fatalf("sandbox updates %v, event updates %v", sandboxes, events)
 	}
 	f.mu.Lock()
@@ -278,7 +279,7 @@ func TestWatchLearnsSandboxesFromTheEventLog(t *testing.T) {
 		t.Fatalf("Watch = %v, want fn's error", err)
 	}
 	if !slices.Equal(events, []string{"c3", "c6"}) ||
-		!slices.Equal(sandboxes, []string{"wl-2 EVENT_TYPE_WORKLOAD_CREATED", "wl-1 EVENT_TYPE_WORKLOAD_UPDATED"}) {
+		!slices.Equal(sandboxes, []string{"wl-2 workload_created", "wl-1 workload_updated"}) {
 		t.Fatalf("event updates %v, sandbox updates %v", events, sandboxes)
 	}
 }
@@ -287,7 +288,7 @@ func TestDeleteAndWait(t *testing.T) {
 	f := newFake()
 	d := newTestDriver(t, f, testConfig)
 	ctx := context.Background()
-	sb := &Sandbox{Name: "a", Sandbox: sandboxOf("wl-1", "orchestrator-1", "a")}
+	sb := sandboxFrom(sandboxOf("wl-1", "orchestrator-1", "a"))
 
 	op, err := d.Delete(ctx, sb)
 	if err != nil {
@@ -299,12 +300,12 @@ func TestDeleteAndWait(t *testing.T) {
 	if k := f.deletes[0].GetRequestKey(); f.deletes[0].GetId() != "wl-1" || !strings.HasPrefix(k, "delete-") || f.deletes[1].GetRequestKey() != k {
 		t.Fatalf("deletes %v", f.deletes)
 	}
-	done, err := d.WaitOperation(ctx, op.GetId())
-	if err != nil || !done.GetDone() {
+	done, err := d.WaitOperation(ctx, op.ID)
+	if err != nil || !done.Done {
 		t.Fatalf("WaitOperation = %v, %v", done, err)
 	}
 	// A done operation is only read.
-	if _, err := d.WaitOperation(ctx, op.GetId()); err != nil {
+	if _, err := d.WaitOperation(ctx, op.ID); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(f.opCalls, []string{"get op-1", "wait op-1", "get op-1"}) {
@@ -318,8 +319,69 @@ func TestDeleteAndWait(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.WaitOperation(ctx, op.GetId()); err == nil || !strings.Contains(err.Error(), "internal: the host failed") {
-		t.Fatalf("a failed operation: err = %v", err)
+	failed, err := d.WaitOperation(ctx, op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Err == nil || !strings.Contains(failed.Err.Error(), "internal: the host failed") {
+		t.Fatalf("a failed operation: Err = %v", failed.Err)
+	}
+}
+
+// TestRecoverEventPayloads covers the driver's own event types: the type,
+// the sandbox, the time, the cursor and the typed payload of each family.
+func TestRecoverEventPayloads(t *testing.T) {
+	ours := sandboxOf("wl-1", "orchestrator-1", "a")
+	at := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	code := int32(7)
+	gone := sandboxOf("wl-2", "orchestrator-1", "b")
+	f := newFake()
+	f.sandboxes = []*workspacev1.Sandbox{ours}
+	f.listCursor = "c0"
+	f.events = []*workspacev1.Event{
+		{
+			Id: "ev-c1", Type: workspacev1.EventType_EVENT_TYPE_EXECUTION_STARTED, WorkloadId: "wl-1", Cursor: "c1",
+			Time:    timestamppb.New(at),
+			Payload: &workspacev1.Event_Execution{Execution: &workspacev1.ExecutionEvent{ExecutionId: "ex-1", Argv: []string{"sh", "-c", "true"}}},
+		},
+		{
+			Id: "ev-c2", Type: workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED, WorkloadId: "wl-1", Cursor: "c2",
+			Time:    timestamppb.New(at.Add(time.Second)),
+			Payload: &workspacev1.Event_Execution{Execution: &workspacev1.ExecutionEvent{ExecutionId: "ex-1", Exit: &workspacev1.ExecutionExit{ExitCode: &code}}},
+		},
+		{
+			Id: "ev-c3", Type: workspacev1.EventType_EVENT_TYPE_EMITTED, WorkloadId: "wl-1", Cursor: "c3",
+			Time:    timestamppb.New(at.Add(2 * time.Second)),
+			Payload: &workspacev1.Event_Emitted{Emitted: &workspacev1.EmittedEvent{Data: []byte("hi")}},
+		},
+		sandboxEvent("c4", workspacev1.EventType_EVENT_TYPE_WORKLOAD_DELETED, gone),
+	}
+	d := newTestDriver(t, f, testConfig)
+	rec, err := d.Recover(context.Background(), "c0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Events) != 4 {
+		t.Fatalf("%d events", len(rec.Events))
+	}
+	started, ended, emitted, deleted := rec.Events[0], rec.Events[1], rec.Events[2], rec.Events[3]
+	if started.Type != EventExecutionStarted || started.SandboxID != "wl-1" || started.Cursor != "c1" || !started.Time.Equal(at) {
+		t.Fatalf("started = %+v", started)
+	}
+	if x := started.Execution; x == nil || x.ExecutionID != "ex-1" || !slices.Equal(x.Argv, []string{"sh", "-c", "true"}) || x.ExitCode != -1 || x.Cancelled {
+		t.Fatalf("started execution = %+v", started.Execution)
+	}
+	if x := ended.Execution; x == nil || x.ExitCode != 7 || x.Cancelled || ended.Type != EventExecutionEnded {
+		t.Fatalf("ended = %+v, %+v", ended, ended.Execution)
+	}
+	if x := emitted.Emitted; x == nil || string(x.Data) != "hi" || emitted.Execution != nil {
+		t.Fatalf("emitted = %+v", emitted)
+	}
+	if deleted.Type != EventWorkloadDeleted || deleted.SandboxID != "wl-2" || deleted.Execution != nil || deleted.Emitted != nil {
+		t.Fatalf("deleted = %+v", deleted)
+	}
+	if started.Proto().GetId() != "ev-c1" || deleted.Proto().GetId() != "ev-c4" {
+		t.Fatalf("Proto ids %q and %q", started.Proto().GetId(), deleted.Proto().GetId())
 	}
 }
 

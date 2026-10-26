@@ -88,7 +88,7 @@ func ExampleDriver_Delete() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	op, err = d.WaitOperation(ctx, op.GetId())
+	op, err = d.WaitOperation(ctx, op.ID)
 	if err != nil {
 		log.Fatal(err)
 	}

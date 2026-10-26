@@ -19,7 +19,7 @@ type Recovery struct {
 	// Events are the execution and emitted events of the driver's
 	// sandboxes after the cursor Recover was given, and the delete events of
 	// those deleted since, oldest first.
-	Events []*workspacev1.Event
+	Events []*Event
 	// Cursor is where Watch starts, and the position to store for the next
 	// Recover until Watch reports a later one.
 	Cursor string
@@ -91,13 +91,13 @@ func (d *Driver) Recover(ctx context.Context, cursor string) (*Recovery, error) 
 		sb := e.GetSandbox()
 		if sb == nil {
 			if d.passes(e) {
-				rec.Events = append(rec.Events, e)
+				rec.Events = append(rec.Events, eventFrom(e))
 			}
 			continue
 		}
 		deleted := e.GetType() == workspacev1.EventType_EVENT_TYPE_WORKLOAD_DELETED
 		if deleted && d.mine(sb) {
-			rec.Events = append(rec.Events, e)
+			rec.Events = append(rec.Events, eventFrom(e))
 		}
 		i := slices.IndexFunc(rec.Sandboxes, func(s *Sandbox) bool { return s.ID() == e.GetWorkloadId() })
 		switch {
@@ -116,7 +116,7 @@ func (d *Driver) Recover(ctx context.Context, cursor string) (*Recovery, error) 
 
 // sandboxFrom returns the sandbox sb, named by its label.
 func sandboxFrom(sb *workspacev1.Sandbox) *Sandbox {
-	return &Sandbox{Name: sb.GetLabels()[LabelSandbox], Sandbox: sb}
+	return &Sandbox{Name: sb.GetLabels()[LabelSandbox], sandbox: sb}
 }
 
 // deadlineGrace is how long Watch waits for ctx's deadline after a watch
@@ -126,13 +126,13 @@ const deadlineGrace = time.Second
 // Update is one change Watch reports: a sandbox's change or an event.
 type Update struct {
 	// Type is the change's or the event's type.
-	Type workspacev1.EventType
+	Type EventType
 	// Sandbox is one of the driver's sandboxes after a change
 	// Sandboxes.Watch reported, or nil for an event.
 	Sandbox *Sandbox
 	// Event is an execution or emitted event of one of the driver's
 	// sandboxes that WatchEvents reported, or nil for a sandbox's change.
-	Event *workspacev1.Event
+	Event *Event
 	// Cursor is set with Event: the position after it, to store once the
 	// update is handled. It is empty on a sandbox's change, which leaves the
 	// stored cursor as it was.
@@ -187,7 +187,7 @@ func (d *Driver) Watch(ctx context.Context, cursor string, fn func(Update) error
 			if !d.mine(sb) {
 				continue
 			}
-			if !send(Update{Type: msg.GetType(), Sandbox: sandboxFrom(sb)}) {
+			if !send(Update{Type: eventType(msg.GetType()), Sandbox: sandboxFrom(sb)}) {
 				return
 			}
 		}
@@ -205,7 +205,7 @@ func (d *Driver) Watch(ctx context.Context, cursor string, fn func(Update) error
 			if !d.passes(e) {
 				continue
 			}
-			if !send(Update{Type: e.GetType(), Event: e, Cursor: e.GetCursor()}) {
+			if !send(Update{Type: eventType(e.GetType()), Event: eventFrom(e), Cursor: e.GetCursor()}) {
 				return
 			}
 		}

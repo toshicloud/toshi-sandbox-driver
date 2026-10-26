@@ -149,8 +149,8 @@ func TestCreateAndWaitRunning(t *testing.T) {
 	if w := waits[0]; w.GetId() != "wl-1" || !slices.Equal(w.GetStates(), wantStates) || w.GetTimeout().AsDuration() != waitBound {
 		t.Fatalf("wait = %v", w)
 	}
-	if sb.State() != StateReady || sb.Sandbox.GetStatus().GetState() != workspacev1.SandboxState_SANDBOX_STATE_RUNNING {
-		t.Fatalf("after WaitRunning: %s %s", sb.State(), sb.Sandbox.GetStatus().GetState())
+	if sb.State() != StateReady || sb.Proto().GetStatus().GetState() != workspacev1.SandboxState_SANDBOX_STATE_RUNNING {
+		t.Fatalf("after WaitRunning: %s %s", sb.State(), sb.Proto().GetStatus().GetState())
 	}
 	patch := updates[0]
 	if !slices.Equal(patch.GetUpdateMask().GetPaths(), []string{"labels"}) {

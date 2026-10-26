@@ -106,7 +106,7 @@ func TestSandboxFlow(t *testing.T) {
 	if again.ID() != sb.ID() {
 		t.Fatalf("Create again made %s, want %s", again.ID(), sb.ID())
 	}
-	t.Logf("step 2: created %s with labels %v; a second Create returned the same sandbox", sb.ID(), sb.Sandbox.GetLabels())
+	t.Logf("step 2: created %s with labels %v; a second Create returned the same sandbox", sb.ID(), sb.Labels())
 
 	// Step 3: running, and read.
 	started := time.Now()
@@ -193,7 +193,7 @@ func TestSandboxFlow(t *testing.T) {
 	if len(rec.Sandboxes) != 1 || rec.Sandboxes[0].ID() != sb.ID() || rec.Sandboxes[0].Name != "e2e-sandbox" || rec.Sandboxes[0].State() != driver.StateReady {
 		t.Fatalf("Recover found %v", rec.Sandboxes)
 	}
-	if ended := countType(rec.Events, workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED); ended != 3 {
+	if ended := countType(rec.Events, driver.EventExecutionEnded); ended != 3 {
 		t.Fatalf("Recover caught up %d ended executions, want 3 (cat, sh, sleep)", ended)
 	}
 	t.Logf("step 7: Recover found %s (%s) and %d events after the stored cursor", sb.ID(), rec.Sandboxes[0].State(), len(rec.Events))
@@ -218,7 +218,7 @@ func TestSandboxFlow(t *testing.T) {
 	await(t, updates, "the execution's end and the busy label", func(seen []driver.Update) bool {
 		var ended, busy bool
 		for _, u := range seen {
-			ended = ended || u.Event != nil && u.Type == workspacev1.EventType_EVENT_TYPE_EXECUTION_ENDED && u.Event.GetExecution().GetExecutionId() == res.ExecutionID
+			ended = ended || u.Event != nil && u.Type == driver.EventExecutionEnded && u.Event.Execution != nil && u.Event.Execution.ExecutionID == res.ExecutionID
 			busy = busy || u.Sandbox != nil && u.Sandbox.State() == driver.StateBusy
 		}
 		return ended && busy
@@ -230,7 +230,7 @@ func TestSandboxFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if op, err = d.WaitOperation(ctx, op.GetId()); err != nil || !op.GetDone() {
+	if op, err = d.WaitOperation(ctx, op.ID); err != nil || !op.Done {
 		t.Fatalf("WaitOperation: %v, %v", op, err)
 	}
 	if _, err := client.Workload().Sandboxes().Get(ctx, &workspacev1.GetSandboxRequest{Id: sb.ID()}); connect.CodeOf(err) != connect.CodeNotFound {
@@ -238,7 +238,7 @@ func TestSandboxFlow(t *testing.T) {
 	}
 	await(t, updates, "the delete", func(seen []driver.Update) bool {
 		for _, u := range seen {
-			if u.Sandbox != nil && u.Type == workspacev1.EventType_EVENT_TYPE_WORKLOAD_DELETED {
+			if u.Sandbox != nil && u.Type == driver.EventWorkloadDeleted {
 				return true
 			}
 		}
@@ -249,7 +249,7 @@ func TestSandboxFlow(t *testing.T) {
 	if !errors.Is(followErr, context.Canceled) {
 		t.Fatalf("Watch ended with %v, want its context's end", followErr)
 	}
-	t.Logf("step 8: %s deleted, operation %s done, and Watch reported the delete", sb.ID(), op.GetId())
+	t.Logf("step 8: %s deleted, operation %s done, and Watch reported the delete", sb.ID(), op.ID)
 
 	// Every WorkloadService call but WatchOutput, and ListProjects.
 	procedures, counts := counted.list()
@@ -288,10 +288,10 @@ var flowCalls = []string{
 }
 
 // countType counts the events of type t.
-func countType(events []*workspacev1.Event, t workspacev1.EventType) int {
+func countType(events []*driver.Event, t driver.EventType) int {
 	n := 0
 	for _, e := range events {
-		if e.GetType() == t {
+		if e.Type == t {
 			n++
 		}
 	}
