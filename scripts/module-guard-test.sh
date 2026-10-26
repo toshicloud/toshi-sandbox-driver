@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Runs scripts/module-guard.sh on small modules that import a stand-in for
-# another github.com/toshicloud module: it must pass a module without the
-# import, and fail one that imports it from a test file, from a Windows-only
-# file, or that cannot be listed.
+# another Toshi module: it must pass a module without the import and a module
+# that imports the client, and fail one that imports any other github or
+# vanity Toshi module from a test file or a Windows-only file, or that
+# cannot be listed.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,6 +44,7 @@ expect() {
   fi
 }
 
+refused='the module depends on a github.com/toshicloud or go.toshicloud.io module other than go.toshicloud.io/toshi and toshi-api'
 import='import _ "github.com/toshicloud/other/probe"'
 
 dir="$(fixture clean)"
@@ -50,15 +52,27 @@ expect 0 "$dir"
 
 dir="$(fixture test-import)"
 printf 'package fixture\n\n%s\n' "$import" >"$dir/fixture_test.go"
-expect 1 "$dir" "GOOS=linux the module depends on a github.com/toshicloud module other than toshi-go and toshi-api"
+expect 1 "$dir" "GOOS=linux $refused"
 
 dir="$(fixture windows-import)"
 printf 'package fixture\n\n%s\n' "$import" >"$dir/fixture_windows.go"
-expect 1 "$dir" "GOOS=windows the module depends on a github.com/toshicloud module other than toshi-go and toshi-api"
+expect 1 "$dir" "GOOS=windows $refused"
 
 dir="$(fixture test-suffix-module github.com/toshicloud/toshi-api.test-helper)"
 printf 'package fixture\n\nimport _ "github.com/toshicloud/toshi-api.test-helper/probe"\n' >"$dir/fixture.go"
-expect 1 "$dir" "GOOS=linux the module depends on a github.com/toshicloud module other than toshi-go and toshi-api"
+expect 1 "$dir" "GOOS=linux $refused"
+
+dir="$(fixture vanity-import go.toshicloud.io/other)"
+printf 'package fixture\n\nimport _ "go.toshicloud.io/other/probe"\n' >"$dir/fixture_test.go"
+expect 1 "$dir" "GOOS=linux $refused"
+
+dir="$(fixture stale-client-import github.com/toshicloud/toshi-go)"
+printf 'package fixture\n\nimport _ "github.com/toshicloud/toshi-go/probe"\n' >"$dir/fixture.go"
+expect 1 "$dir" "GOOS=linux $refused"
+
+dir="$(fixture client-import go.toshicloud.io/toshi)"
+printf 'package fixture\n\nimport _ "go.toshicloud.io/toshi/probe"\n' >"$dir/fixture.go"
+expect 0 "$dir"
 
 dir="$(fixture listing-error)"
 printf 'package fixture\n\nimport _ "example.com/missing"\n' >"$dir/missing.go"

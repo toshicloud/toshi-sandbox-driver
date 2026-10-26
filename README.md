@@ -140,8 +140,9 @@ scripts/check.sh
 ```
 
 It fails if the module's packages or their tests depend on a
-`github.com/toshicloud` module other than toshi-go and toshi-api when
-built for Linux or for Windows, or if they cannot be listed
+`github.com/toshicloud` or `go.toshicloud.io` module other than
+`go.toshicloud.io/toshi` and toshi-api when built for Linux or for
+Windows, or if they cannot be listed
 (`scripts/module-guard.sh`, itself tested by
 `scripts/module-guard-test.sh`). Then it builds the module for the host
 and for Windows, runs `go vet`, golangci-lint (version pinned in the
@@ -176,7 +177,7 @@ stack's logs.
 
 ## Versions
 
-`go.mod` pins toshi-go and toshi-api to one version each. Moving either
+`go.mod` pins the client and toshi-api to one version each. Moving either
 to another version is one pull request that changes `go.mod` and
 `go.sum`.
 
