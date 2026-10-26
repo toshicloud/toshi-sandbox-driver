@@ -43,6 +43,58 @@ func TestCheck(t *testing.T) {
 	}
 }
 
+// TestCheckPagesThroughProjects covers a workspace whose projects do not
+// all fit in the first page ListProjects returns.
+func TestCheckPagesThroughProjects(t *testing.T) {
+	production := []*workspacev1.ProjectEnvironment{{Name: "production"}}
+	tests := []struct {
+		name    string
+		pages   [][]*workspacev1.Project
+		wantErr string
+	}{
+		{
+			name: "project on a later page",
+			pages: [][]*workspacev1.Project{
+				{{Name: "builds", Environments: production}},
+				{{Name: "default", Environments: production}},
+			},
+		},
+		{
+			name: "no such project after the last page",
+			pages: [][]*workspacev1.Project{
+				{{Name: "builds", Environments: production}},
+				{{Name: "web", Environments: production}},
+			},
+			wantErr: `the token sees no project "default"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFake()
+			f.projectPages = tt.pages
+			d := newTestDriver(t, f, testConfig)
+			err := d.Check(context.Background())
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want %q", err, tt.wantErr)
+			}
+			var tokens []string
+			for _, r := range f.projectLists {
+				if r.GetPageSize() != 0 {
+					t.Fatalf("ListProjects page size = %d, want the server's", r.GetPageSize())
+				}
+				tokens = append(tokens, r.GetPageToken())
+			}
+			if !slices.Equal(tokens, []string{"", "1"}) {
+				t.Fatalf("ListProjects page tokens %v, want both pages", tokens)
+			}
+		})
+	}
+}
+
 func TestCreateAndWaitRunning(t *testing.T) {
 	f := newFake()
 	d := newTestDriver(t, f, testConfig)
