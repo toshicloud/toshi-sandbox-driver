@@ -3,7 +3,7 @@
 A Go program that runs sandboxes on Toshi for an agent orchestrator. It
 uses only the public Workspace API, `toshi.workspace.v1`, through the
 [toshi-go](https://pkg.go.dev/go.toshicloud.io/toshi) client,
-`go.toshicloud.io/toshi`, and imports no other Toshi module but toshi-api.
+`go.toshicloud.io/toshi`, and imports no other Toshi module but `go.toshicloud.io/api`.
 Before v0.2.0 that client was the module
 [github.com/toshicloud/toshi-go](https://github.com/toshicloud/toshi-go).
 
@@ -173,7 +173,7 @@ scripts/check.sh
 
 It fails if the module's packages or their tests depend on a
 `github.com/toshicloud` or `go.toshicloud.io` module other than
-`go.toshicloud.io/toshi` and toshi-api when built for Linux or for
+`go.toshicloud.io/toshi` and `go.toshicloud.io/api` when built for Linux or for
 Windows, or if they cannot be listed
 (`scripts/module-guard.sh`, itself tested by
 `scripts/module-guard-test.sh`). Then it builds the module for the host
@@ -209,7 +209,7 @@ stack's logs.
 
 ## Versions
 
-`go.mod` pins the client and toshi-api to one version each. Moving either
+`go.mod` pins the client and `go.toshicloud.io/api` to one version each. Moving either
 to another version is one pull request that changes `go.mod` and
 `go.sum`.
 

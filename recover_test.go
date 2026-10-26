@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	workspacev1 "github.com/toshicloud/toshi-api/workspacev1"
+	workspacev1 "go.toshicloud.io/api/workspacev1"
 	"google.golang.org/protobuf/proto"
 )
 

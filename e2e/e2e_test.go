@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	workspacev1 "github.com/toshicloud/toshi-api/workspacev1"
+	workspacev1 "go.toshicloud.io/api/workspacev1"
 	toshi "go.toshicloud.io/toshi"
 	"google.golang.org/protobuf/types/known/durationpb"
 
@@ -166,7 +166,7 @@ func TestSandboxFlow(t *testing.T) {
 	t.Logf("step 5: sleep 600 cancelled at its 3s timeout, ended after %s", took.Round(100*time.Millisecond))
 
 	// Step 6: the state label as the server holds it.
-	got, err := client.Workload.Sandboxes.Get(ctx, &workspacev1.GetSandboxRequest{Id: sb.ID()})
+	got, err := client.Workload().Sandboxes().Get(ctx, &workspacev1.GetSandboxRequest{Id: sb.ID()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestSandboxFlow(t *testing.T) {
 	if op, err = d.WaitOperation(ctx, op.GetId()); err != nil || !op.GetDone() {
 		t.Fatalf("WaitOperation: %v, %v", op, err)
 	}
-	if _, err := client.Workload.Sandboxes.Get(ctx, &workspacev1.GetSandboxRequest{Id: sb.ID()}); connect.CodeOf(err) != connect.CodeNotFound {
+	if _, err := client.Workload().Sandboxes().Get(ctx, &workspacev1.GetSandboxRequest{Id: sb.ID()}); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatalf("GetSandbox after the delete: %v, want NOT_FOUND", err)
 	}
 	await(t, updates, "the delete", func(seen []driver.Update) bool {
@@ -335,7 +335,7 @@ func servedCommit(t *testing.T, bin string) string {
 func deleteSandbox(t *testing.T, client *toshi.Client, id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	resp, err := client.Workload.Sandboxes.Delete(ctx, &workspacev1.DeleteSandboxRequest{Id: id})
+	resp, err := client.Workload().Sandboxes().Delete(ctx, &workspacev1.DeleteSandboxRequest{Id: id})
 	if connect.CodeOf(err) == connect.CodeNotFound {
 		return
 	}
@@ -343,7 +343,7 @@ func deleteSandbox(t *testing.T, client *toshi.Client, id string) {
 		t.Errorf("delete %s: %v", id, err)
 		return
 	}
-	if _, err := client.Workload.WaitOperation(ctx, &workspacev1.WaitOperationRequest{
+	if _, err := client.Workload().WaitOperation(ctx, &workspacev1.WaitOperationRequest{
 		Id:      resp.GetOperation().GetId(),
 		Timeout: durationpb.New(30 * time.Second),
 	}); err != nil {

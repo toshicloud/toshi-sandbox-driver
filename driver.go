@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"connectrpc.com/connect"
-	workspacev1 "github.com/toshicloud/toshi-api/workspacev1"
+	workspacev1 "go.toshicloud.io/api/workspacev1"
 	toshi "go.toshicloud.io/toshi"
 )
 
@@ -45,7 +45,7 @@ func New(cfg Config, opts ...toshi.Option) (*Driver, error) {
 func (d *Driver) Check(ctx context.Context) error {
 	req := &workspacev1.ListProjectsRequest{}
 	for {
-		resp, err := d.client.Project.ListProjects(ctx, connect.NewRequest(req))
+		resp, err := d.client.Project().ListProjects(ctx, connect.NewRequest(req))
 		if err != nil {
 			return fmt.Errorf("driver: list projects: %w", err)
 		}

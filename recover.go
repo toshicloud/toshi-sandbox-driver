@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	workspacev1 "github.com/toshicloud/toshi-api/workspacev1"
+	workspacev1 "go.toshicloud.io/api/workspacev1"
 )
 
 // Recovery is what Recover found.
@@ -42,7 +42,7 @@ func (d *Driver) Recover(ctx context.Context, cursor string) (*Recovery, error) 
 		Labels: map[string]string{LabelDriver: d.cfg.Name},
 	}
 	for {
-		resp, err := d.client.Workload.Sandboxes.List(ctx, list)
+		resp, err := d.client.Workload().Sandboxes().List(ctx, list)
 		if err != nil {
 			return nil, fmt.Errorf("driver: list sandboxes: %w", err)
 		}
@@ -69,7 +69,7 @@ func (d *Driver) Recover(ctx context.Context, cursor string) (*Recovery, error) 
 	var events []*workspacev1.Event
 	req := &workspacev1.ListEventsRequest{PageToken: cursor}
 	for {
-		resp, err := d.client.Workload.ListEvents(ctx, req)
+		resp, err := d.client.Workload().ListEvents(ctx, req)
 		if err != nil {
 			return nil, fmt.Errorf("driver: list events after the stored cursor: %w", err)
 		}
@@ -159,12 +159,12 @@ func (d *Driver) Watch(ctx context.Context, cursor string, fn func(Update) error
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	sandboxes, err := d.client.Workload.Sandboxes.Watch(ctx, &workspacev1.WatchSandboxesRequest{Cursor: cursor})
+	sandboxes, err := d.client.Workload().Sandboxes().Watch(ctx, &workspacev1.WatchSandboxesRequest{Cursor: cursor})
 	if err != nil {
 		return endErr(ctx, fmt.Errorf("driver: watch sandboxes: %w", err))
 	}
 	defer func() { _ = sandboxes.Close() }()
-	events, err := d.client.Workload.WatchEvents(ctx, &workspacev1.WatchEventsRequest{Cursor: cursor})
+	events, err := d.client.Workload().WatchEvents(ctx, &workspacev1.WatchEventsRequest{Cursor: cursor})
 	if err != nil {
 		return endErr(ctx, fmt.Errorf("driver: watch events: %w", err))
 	}
