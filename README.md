@@ -23,41 +23,73 @@ duration passes. The driver:
 
 ## Use
 
+<!-- ExampleNew -->
 ```go
 cfg, err := driver.ConfigFromEnv()
-// ...
+if err != nil {
+	log.Fatal(err)
+}
 d, err := driver.New(cfg)
-// ...
-if err := d.Check(ctx); err != nil { /* unreachable, refused, or the wrong scope */ }
+if err != nil {
+	log.Fatal(err)
+}
+if err := d.Check(ctx); err != nil {
+	log.Fatal(err) // unreachable, refused, or the wrong scope
+}
+```
 
+<!-- ExampleDriver_Create -->
+```go
 sb, err := d.Create(ctx, "task-42", driver.Spec{Size: "toshi-linux-2x", MaxDuration: 30 * time.Minute})
-// ...
-if err := d.WaitRunning(ctx, sb); err != nil { /* it ended instead, or ctx ended */ }
+if err != nil {
+	log.Fatal(err)
+}
+if err := d.WaitRunning(ctx, sb); err != nil {
+	log.Fatal(err) // it ended instead, or ctx ended
+}
 
 res, err := d.Execute(ctx, sb, driver.Command{
 	Argv:    []string{"sh", "-c", "make test"},
-	Stdin:   input,
+	Stdin:   os.Stdin,
 	Stdout:  os.Stdout,
 	Stderr:  os.Stderr,
 	Timeout: 10 * time.Minute,
 })
+if err != nil {
+	log.Fatal(err)
+}
 // res.ExitCode, res.Cancelled, res.TimedOut
+```
 
+<!-- ExampleDriver_Delete -->
+```go
 op, err := d.Delete(ctx, sb)
-// ...
+if err != nil {
+	log.Fatal(err)
+}
 op, err = d.WaitOperation(ctx, op.GetId())
+if err != nil {
+	log.Fatal(err)
+}
 ```
 
 After a restart:
 
+<!-- ExampleDriver_Recover -->
 ```go
 rec, err := d.Recover(ctx, stored) // stored: the last cursor saved, or ""
+if err != nil {
+	log.Fatal(err)
+}
 // rec.Sandboxes, rec.Events, rec.Cursor
 err = d.Watch(ctx, rec.Cursor, func(u driver.Update) error {
 	// u.Sandbox changed, or u.Event happened. Handle it, then save
 	// u.Cursor if it is set: only events carry one.
 	return nil
 })
+if err != nil {
+	log.Fatal(err)
+}
 ```
 
 - `Check` lists the projects the token sees and fails unless the

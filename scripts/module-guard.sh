@@ -8,7 +8,7 @@ set -euo pipefail
 cd "${1:-.}"
 
 module="$(go list -m)"
-allowed="^(${module//./\\.}|go\.toshicloud\.io/toshi|github\.com/toshicloud/toshi-api)(/|\.test( |\$)| |\$)"
+allowed="^(${module//./\\.}(_test)?|go\.toshicloud\.io/toshi|github\.com/toshicloud/toshi-api)(/|\.test( |\$)| |\$)"
 
 for goos in linux windows; do
   if ! deps="$(GOOS="$goos" go list -deps -test ./...)"; then
