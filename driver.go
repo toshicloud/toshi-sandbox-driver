@@ -39,22 +39,30 @@ func New(cfg Config, opts ...toshi.Option) (*Driver, error) {
 }
 
 // Check confirms with ListProjects that the token sees the configured
-// project and that the project has the configured environment.
+// project and that the project has the configured environment. It reads
+// every page of projects, so a project the server returns on a later page
+// is still found.
 func (d *Driver) Check(ctx context.Context) error {
-	resp, err := d.client.Project.ListProjects(ctx, connect.NewRequest(&workspacev1.ListProjectsRequest{}))
-	if err != nil {
-		return fmt.Errorf("driver: list projects: %w", err)
-	}
-	for _, p := range resp.Msg.GetProjects() {
-		if p.GetName() != d.cfg.Project {
-			continue
+	req := &workspacev1.ListProjectsRequest{}
+	for {
+		resp, err := d.client.Project.ListProjects(ctx, connect.NewRequest(req))
+		if err != nil {
+			return fmt.Errorf("driver: list projects: %w", err)
 		}
-		for _, env := range p.GetEnvironments() {
-			if env.GetName() == d.cfg.Environment {
-				return nil
+		for _, p := range resp.Msg.GetProjects() {
+			if p.GetName() != d.cfg.Project {
+				continue
 			}
+			for _, env := range p.GetEnvironments() {
+				if env.GetName() == d.cfg.Environment {
+					return nil
+				}
+			}
+			return fmt.Errorf("driver: project %q has no environment %q", d.cfg.Project, d.cfg.Environment)
 		}
-		return fmt.Errorf("driver: project %q has no environment %q", d.cfg.Project, d.cfg.Environment)
+		if resp.Msg.GetNextPageToken() == "" {
+			return fmt.Errorf("driver: the token sees no project %q", d.cfg.Project)
+		}
+		req.PageToken = resp.Msg.GetNextPageToken()
 	}
-	return fmt.Errorf("driver: the token sees no project %q", d.cfg.Project)
 }

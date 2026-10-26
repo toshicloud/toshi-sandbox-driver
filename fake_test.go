@@ -23,11 +23,15 @@ type fake struct {
 
 	mu       sync.Mutex
 	projects []*workspacev1.Project
-	creates  []*workspacev1.CreateSandboxRequest
-	waits    []*workspacev1.WaitSandboxRequest
-	updates  []*workspacev1.UpdateSandboxRequest
-	cancels  []*workspacev1.CancelExecutionRequest
-	sandbox  *workspacev1.Sandbox
+	// projectPages, when set, are the pages ListProjects returns in order;
+	// the page token is the index of the page to return.
+	projectPages [][]*workspacev1.Project
+	projectLists []*workspacev1.ListProjectsRequest
+	creates      []*workspacev1.CreateSandboxRequest
+	waits        []*workspacev1.WaitSandboxRequest
+	updates      []*workspacev1.UpdateSandboxRequest
+	cancels      []*workspacev1.CancelExecutionRequest
+	sandbox      *workspacev1.Sandbox
 	// waitState is the state WaitSandbox reaches.
 	waitState workspacev1.SandboxState
 	// cancelled is closed by the first CancelExecution.
@@ -66,10 +70,25 @@ func newFake() *fake {
 	}
 }
 
-func (f *fake) ListProjects(context.Context, *connect.Request[workspacev1.ListProjectsRequest]) (*connect.Response[workspacev1.ListProjectsResponse], error) {
+func (f *fake) ListProjects(_ context.Context, req *connect.Request[workspacev1.ListProjectsRequest]) (*connect.Response[workspacev1.ListProjectsResponse], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return connect.NewResponse(&workspacev1.ListProjectsResponse{Projects: f.projects}), nil
+	f.projectLists = append(f.projectLists, req.Msg)
+	if f.projectPages == nil {
+		return connect.NewResponse(&workspacev1.ListProjectsResponse{Projects: f.projects}), nil
+	}
+	page := 0
+	if t := req.Msg.GetPageToken(); t != "" {
+		page = int(t[0] - '0')
+	}
+	resp := &workspacev1.ListProjectsResponse{}
+	if page < len(f.projectPages) {
+		resp.Projects = f.projectPages[page]
+	}
+	if page+1 < len(f.projectPages) {
+		resp.NextPageToken = string(rune('0' + page + 1))
+	}
+	return connect.NewResponse(resp), nil
 }
 
 // CreateSandbox creates the one sandbox, or returns it for a repeated key.
