@@ -10,7 +10,7 @@ import (
 	"maps"
 	"time"
 
-	workspacev1 "github.com/toshicloud/toshi-api/workspacev1"
+	workspacev1 "go.toshicloud.io/api/workspacev1"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
@@ -81,7 +81,7 @@ func (d *Driver) Create(ctx context.Context, name string, spec Spec) (*Sandbox, 
 	case spec.MaxDuration%time.Minute != 0:
 		return nil, fmt.Errorf("driver: sandbox %q: the maximum duration %s is not a whole number of minutes", name, spec.MaxDuration)
 	}
-	resp, err := d.client.Workload.Sandboxes.Create(ctx, &workspacev1.CreateSandboxRequest{
+	resp, err := d.client.Workload().Sandboxes().Create(ctx, &workspacev1.CreateSandboxRequest{
 		Spec: &workspacev1.SandboxSpec{
 			Size:        spec.Size,
 			MaxDuration: durationpb.New(spec.MaxDuration),
@@ -121,14 +121,14 @@ func (d *Driver) requestKey(prefix, name string) string {
 // It fails when the sandbox is not running. It has no bound of its own: ctx
 // ends a wait for a sandbox that stays queued.
 func (d *Driver) WaitRunning(ctx context.Context, sb *Sandbox) error {
-	if _, err := d.client.Workload.Sandboxes.Wait(ctx, &workspacev1.WaitSandboxRequest{
+	if _, err := d.client.Workload().Sandboxes().Wait(ctx, &workspacev1.WaitSandboxRequest{
 		Id:      sb.ID(),
 		States:  []workspacev1.SandboxState{workspacev1.SandboxState_SANDBOX_STATE_RUNNING, workspacev1.SandboxState_SANDBOX_STATE_ENDED},
 		Timeout: durationpb.New(waitBound),
 	}); err != nil {
 		return fmt.Errorf("driver: wait for sandbox %s: %w", sb.ID(), err)
 	}
-	resp, err := d.client.Workload.Sandboxes.Get(ctx, &workspacev1.GetSandboxRequest{Id: sb.ID()})
+	resp, err := d.client.Workload().Sandboxes().Get(ctx, &workspacev1.GetSandboxRequest{Id: sb.ID()})
 	if err != nil {
 		return fmt.Errorf("driver: get sandbox %s: %w", sb.ID(), err)
 	}
@@ -152,7 +152,7 @@ func (d *Driver) setState(ctx context.Context, sb *Sandbox, state string) error 
 		labels = make(map[string]string, 1)
 	}
 	labels[LabelState] = state
-	resp, err := d.client.Workload.Sandboxes.Update(ctx, &workspacev1.UpdateSandboxRequest{
+	resp, err := d.client.Workload().Sandboxes().Update(ctx, &workspacev1.UpdateSandboxRequest{
 		Id:         sb.ID(),
 		Sandbox:    &workspacev1.Sandbox{Labels: labels},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},

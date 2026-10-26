@@ -44,7 +44,7 @@ expect() {
   fi
 }
 
-refused='the module depends on a github.com/toshicloud or go.toshicloud.io module other than go.toshicloud.io/toshi and toshi-api'
+refused='the module depends on a github.com/toshicloud or go.toshicloud.io module other than go.toshicloud.io/toshi and go.toshicloud.io/api'
 import='import _ "github.com/toshicloud/other/probe"'
 
 dir="$(fixture clean)"
@@ -62,8 +62,8 @@ dir="$(fixture windows-import)"
 printf 'package fixture\n\n%s\n' "$import" >"$dir/fixture_windows.go"
 expect 1 "$dir" "GOOS=windows $refused"
 
-dir="$(fixture test-suffix-module github.com/toshicloud/toshi-api.test-helper)"
-printf 'package fixture\n\nimport _ "github.com/toshicloud/toshi-api.test-helper/probe"\n' >"$dir/fixture.go"
+dir="$(fixture test-suffix-module go.toshicloud.io/api.test-helper)"
+printf 'package fixture\n\nimport _ "go.toshicloud.io/api.test-helper/probe"\n' >"$dir/fixture.go"
 expect 1 "$dir" "GOOS=linux $refused"
 
 dir="$(fixture vanity-import go.toshicloud.io/other)"

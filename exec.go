@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	workspacev1 "github.com/toshicloud/toshi-api/workspacev1"
+	workspacev1 "go.toshicloud.io/api/workspacev1"
 	toshi "go.toshicloud.io/toshi"
 )
 
@@ -74,7 +74,7 @@ func (d *Driver) Execute(ctx context.Context, sb *Sandbox, cmd Command) (Result,
 // what else went wrong: a read of Stdin, a write to Stdout or Stderr, or a
 // cancel at the timeout that failed while the command ran on to its end.
 func (d *Driver) run(ctx context.Context, sb *Sandbox, cmd Command) (Result, bool, error) {
-	p, err := d.client.Workload.Sandboxes.Execute(ctx, &workspacev1.ExecuteStart{
+	p, err := d.client.Workload().Sandboxes().Execute(ctx, &workspacev1.ExecuteStart{
 		SandboxId: sb.ID(),
 		Command:   &workspacev1.Command{Argv: cmd.Argv, Env: cmd.Env, Cwd: cmd.Cwd},
 	})
@@ -112,7 +112,7 @@ func (d *Driver) run(ctx context.Context, sb *Sandbox, cmd Command) (Result, boo
 	if cmd.Timeout > 0 {
 		cancelErr = make(chan error, 1)
 		timer = time.AfterFunc(cmd.Timeout, func() {
-			_, err := d.client.Workload.Sandboxes.CancelExecution(ctx, &workspacev1.CancelExecutionRequest{
+			_, err := d.client.Workload().Sandboxes().CancelExecution(ctx, &workspacev1.CancelExecutionRequest{
 				ExecutionId: res.ExecutionID,
 			})
 			cancelErr <- err
