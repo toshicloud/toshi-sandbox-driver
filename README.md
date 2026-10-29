@@ -1,6 +1,6 @@
 # toshi-sandbox-driver
 
-A Go program that runs sandboxes on Toshi for an agent orchestrator. It
+A Go package that runs sandboxes on Toshi for an agent orchestrator. It
 uses only the public Workspace API, `toshi.workspace.v1`, through the
 [toshi-go](https://pkg.go.dev/go.toshicloud.io/toshi) client,
 `go.toshicloud.io/toshi`, and imports no other Toshi module but `go.toshicloud.io/api`.
@@ -223,8 +223,12 @@ script, configuration in `.golangci.yml`) and the unit tests.
 
 `e2e/` runs steps 1 to 8 against a served Toshi, a second driver
 recovering the first one's sandbox from a saved cursor, and fails unless
-the driver made `ListProjects` and every `WorkloadService` call but
-`WatchOutput`. The served Toshi is `toshi serve` with its
+the driver made `ListProjects` and the 13 `WorkloadService` calls it
+uses: the sandbox calls `CreateSandbox`, `WaitSandbox`, `GetSandbox`,
+`UpdateSandbox`, `ListSandboxes`, `WatchSandboxes` and `DeleteSandbox`;
+the execution calls `Execute` and `CancelExecution`; the event calls
+`ListEvents` and `WatchEvents`; and the operation calls `GetOperation`
+and `WaitOperation`. The served Toshi is `toshi serve` with its
 all-in-one agent, which runs the sandbox in a qemu VM. It needs KVM and
 a guest image, so it skips itself unless `TOSHI_DRIVER_E2E_BIN` is set,
 and CI does not set it.
