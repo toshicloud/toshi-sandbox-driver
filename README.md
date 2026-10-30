@@ -92,11 +92,18 @@ if err != nil {
 }
 ```
 
+- `New` passes its options to toshi-go's `toshi.New`, so an option such as
+  `toshi.WithServer`, `toshi.WithToken`, `toshi.WithCAFile`,
+  `toshi.WithHTTPClient` or `toshi.WithRetryPolicy` replaces what the
+  environment or toshi-go's default would give. The scope is always the
+  configured project and environment, whatever the options say.
 - `Check` lists the projects the token sees and fails unless the
   configured project has the configured environment.
 - `Create` creates a sandbox with three labels: `toshi-sandbox-driver`
   (the driver's name), `toshi-sandbox-driver/sandbox` (the sandbox's
-  name) and `toshi-sandbox-driver/state`. `MaxDuration` is required: a
+  name) and `toshi-sandbox-driver/state`, exported as `LabelDriver`,
+  `LabelSandbox` and `LabelState`. `Spec.Size` names the machine size, for
+  example `toshi-linux-2x`. `MaxDuration` is required: a
   whole number of minutes, at least one. The request key comes from the
   project, the environment and the two names, so creating the same name
   again with the same spec, after a lost answer or a restart, returns the
@@ -106,10 +113,17 @@ if err != nil {
   the sandbox ended instead. It has no bound of its own, so give `ctx` a
   deadline.
 - `Execute` runs a command, feeding `Stdin` and streaming its output, and
-  cancels it with `CancelExecution` when `Timeout` passes. A non-zero
-  exit is a result, not an error. A read of `Stdin` that fails before the
-  command ended closes its input and fails `Execute`.
-- The state label is `starting` after `Create`, `ready` once
+  cancels it with `CancelExecution` when `Timeout` passes; a zero
+  `Timeout` sets no limit. `Argv[0]` is looked up on the guest's `PATH`,
+  `Env` is added to the command's environment and `Cwd` is its working
+  directory (empty: the guest's default). A nil `Stdin` closes standard
+  input at once, and a nil `Stdout` or `Stderr` discards that stream. A
+  non-zero exit is a result, not an error: `Result` holds `ExecutionID`,
+  `ExitCode` (-1 when the command ended without one), `Cancelled` and
+  `TimedOut`. A read of `Stdin` that fails before the command ended closes
+  its input and fails `Execute`.
+- The state label (`StateStarting`, `StateReady` and `StateBusy`) is
+  `starting` after `Create`, `ready` once
   `WaitRunning` has seen the sandbox run and between commands, and `busy`
   while a command runs. When `Execute` fails or its stream is lost, the
   driver cannot always tell whether the command started or still runs, so
@@ -168,7 +182,8 @@ not carry.
   the driver reports: `EventWorkloadCreated`,
   `EventWorkloadStateChanged`, `EventWorkloadUpdated`,
   `EventWorkloadDeleted`, `EventExecutionStarted`, `EventExecutionEnded`
-  and `EventEmitted`. An event of another type is dropped.
+  and `EventEmitted`. `EventUnspecified`, the zero value, is no event the
+  driver reports; an event of another type is dropped.
 - `Proto` on `Sandbox`, `Operation` and `Event` returns the generated
   message, for code that needs a field the driver does not carry.
 
@@ -254,8 +269,9 @@ stack's logs.
 
 ## Versions
 
-`go.mod` pins the client and `go.toshicloud.io/api` to one version each. Moving either
-to another version is one pull request that changes `go.mod` and
+`go.mod` pins the client and `go.toshicloud.io/api` to one version each:
+`go.toshicloud.io/toshi` v0.3.0 and `go.toshicloud.io/api` v0.3.0. Moving
+either to another version is one pull request that changes `go.mod` and
 `go.sum`.
 
 ## Licence
