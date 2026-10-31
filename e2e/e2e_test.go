@@ -322,7 +322,7 @@ func TestSandboxFlow(t *testing.T) {
 }
 
 // networkHelperSocket is where Toshi's network helper listens.
-const networkHelperSocket = "/run/toshi-agent-netsets.sock"
+const networkHelperSocket = "/run/toshi-host-netsets.sock"
 
 // flowCalls are the calls the flow makes: ProjectService's ListProjects and
 // the WorkloadService calls the driver uses.

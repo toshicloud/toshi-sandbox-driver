@@ -38,7 +38,7 @@ accelerator (default `kvm`), and `TOSHI_DRIVER_E2E_LOG_DIR` keeps the
 stack's logs.
 
 On a host that runs Toshi's network helper (its socket is
-`/run/toshi-agent-netsets.sock`), the agent writes each VM's network
+`/run/toshi-host-netsets.sock`), the agent writes each VM's network
 rules in the VM's own cgroup, and the stack gives its VMs none, so the
 test stops at once. With `TOSHI_DRIVER_E2E_HIDE_NETWORK_HELPER=1`, the
 script runs the test in a user and mount namespace in which that socket
