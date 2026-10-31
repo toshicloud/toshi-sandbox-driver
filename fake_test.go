@@ -48,6 +48,14 @@ type fake struct {
 	tick int64
 	// waitState is the state WaitSandbox reaches.
 	waitState workspacev1.SandboxState
+	// stopLag, when set, makes StopSandbox answer with the sandbox still
+	// running, as the server does before the VM is off; stopping is then
+	// set, and the next WaitSandbox or GetSandbox finds it stopped.
+	stopLag  bool
+	stopping bool
+	// stopEnds, with stopLag, makes the lagging stop end the sandbox
+	// instead.
+	stopEnds bool
 	// cancelled is closed by the first CancelExecution.
 	cancelled chan struct{}
 	execute   func(context.Context, *connect.BidiStream[workspacev1.ExecuteRequest, workspacev1.ExecuteResponse]) error
@@ -136,9 +144,26 @@ func (f *fake) WaitSandbox(_ context.Context, req *connect.Request[workspacev1.W
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.waits = append(f.waits, req.Msg)
-	f.sandbox.Status.State = f.waitState
-	f.touch()
+	if f.stopping {
+		f.finishStop()
+	} else {
+		f.sandbox.Status.State = f.waitState
+		f.touch()
+	}
 	return connect.NewResponse(&workspacev1.WaitSandboxResponse{Sandbox: f.sandbox, Reached: true}), nil
+}
+
+// finishStop puts the sandbox in CREATED with its stop time.
+func (f *fake) finishStop() {
+	f.stopping = false
+	status := f.sandbox.GetStatus()
+	f.touch()
+	if f.stopEnds {
+		status.State = workspacev1.SandboxState_SANDBOX_STATE_ENDED
+		return
+	}
+	status.State = workspacev1.SandboxState_SANDBOX_STATE_CREATED
+	status.StoppedAt = status.UpdatedAt
 }
 
 // hold puts an operator's hold on the sandbox's status: its reason, when it
@@ -179,6 +204,9 @@ func (f *fake) GetSandbox(_ context.Context, req *connect.Request[workspacev1.Ge
 	if f.sandbox == nil || req.Msg.GetId() != f.sandbox.GetId() {
 		return nil, connect.NewError(connect.CodeNotFound, nil)
 	}
+	if f.stopping {
+		f.finishStop()
+	}
 	return connect.NewResponse(&workspacev1.GetSandboxResponse{Sandbox: f.sandbox}), nil
 }
 
@@ -206,12 +234,15 @@ func (f *fake) StopSandbox(_ context.Context, req *connect.Request[workspacev1.S
 		return nil, connect.NewError(connect.CodeFailedPrecondition, nil)
 	}
 	status := f.sandbox.GetStatus()
-	if status.GetState() == workspacev1.SandboxState_SANDBOX_STATE_CREATED && status.GetStoppedAt() != nil {
+	if status.GetState() == workspacev1.SandboxState_SANDBOX_STATE_CREATED && status.GetStoppedAt() != nil || f.stopping {
 		return connect.NewResponse(&workspacev1.StopSandboxResponse{Sandbox: f.sandbox}), nil
 	}
-	status.State = workspacev1.SandboxState_SANDBOX_STATE_CREATED
-	f.touch()
-	status.StoppedAt = status.UpdatedAt
+	if f.stopLag {
+		f.stopping = true
+		f.touch()
+		return connect.NewResponse(&workspacev1.StopSandboxResponse{Sandbox: f.sandbox}), nil
+	}
+	f.finishStop()
 	return connect.NewResponse(&workspacev1.StopSandboxResponse{Sandbox: f.sandbox}), nil
 }
 

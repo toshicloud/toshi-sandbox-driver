@@ -151,7 +151,10 @@ if err != nil {
   with `ErrStopped` and runs nothing.
 - `Stop` stops a sandbox created with `KeepVM` with `StopSandbox`: its
   run and every command in it end, and its VM is powered off with its
-  disk kept. `Start` queues a run on that VM with `StartSandbox`; then
+  disk kept. The server answers before the VM is off, so `Stop` then
+  waits with `WaitSandbox`, bounded by its context, until the sandbox is
+  stopped: once it returns, `Execute` fails with `ErrStopped`. `Start`
+  queues a run on that VM with `StartSandbox`; then
   `WaitRunning` waits until it runs. Either fails with
   `FAILED_PRECONDITION` on a sandbox created without `KeepVM` or one that
   has ended. Each call's request key comes from the scope, the two names

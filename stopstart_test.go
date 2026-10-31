@@ -3,6 +3,7 @@ package driver
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,68 @@ func TestExecuteOnStoppedSandbox(t *testing.T) {
 	}
 	if _, _, after, _ := f.calls(); len(after) != len(updates) {
 		t.Fatalf("Execute patched the stopped sandbox: %v", f.states())
+	}
+}
+
+// TestStopWaitsForTheServer covers a server that answers the stop while the
+// sandbox still runs: Stop returns once it is stopped, and Execute right after
+// it sends nothing.
+func TestStopWaitsForTheServer(t *testing.T) {
+	f := newFake()
+	f.stopLag = true
+	ran := false
+	f.execute = func(context.Context, *connect.BidiStream[workspacev1.ExecuteRequest, workspacev1.ExecuteResponse]) error {
+		ran = true
+		return errors.New("unexpected execute")
+	}
+	d := newTestDriver(t, f, testConfig)
+	ctx := context.Background()
+	sb := startKeptSandbox(t, d)
+	_, before, _, _ := f.calls()
+
+	if err := d.Stop(ctx, sb); err != nil {
+		t.Fatal(err)
+	}
+	if got := sb.State(); got != StateStopped {
+		t.Fatalf("after Stop: state %q, want %q", got, StateStopped)
+	}
+	_, waits, _, _ := f.calls()
+	if len(waits) != len(before)+1 {
+		t.Fatalf("Stop made %d WaitSandbox calls, want 1", len(waits)-len(before))
+	}
+	want := []workspacev1.SandboxState{workspacev1.SandboxState_SANDBOX_STATE_CREATED, workspacev1.SandboxState_SANDBOX_STATE_ENDED}
+	if w := waits[len(waits)-1]; w.GetId() != "wl-1" || !slices.Equal(w.GetStates(), want) || w.GetTimeout().AsDuration() != waitBound {
+		t.Fatalf("Stop's wait %v", w)
+	}
+	if got := f.states(); got[len(got)-1] != StateStopped {
+		t.Fatalf("labels recorded %v, want %q last", got, StateStopped)
+	}
+
+	_, err := d.Execute(ctx, sb, Command{Argv: []string{"true"}})
+	if !errors.Is(err, ErrStopped) {
+		t.Fatalf("Execute right after Stop = %v, want ErrStopped", err)
+	}
+	if ran {
+		t.Fatal("Execute sent a command to a stopped sandbox")
+	}
+}
+
+// TestStopEndsWhileWaiting covers a sandbox that ends instead of stopping:
+// Stop fails naming its state and does not record it as stopped.
+func TestStopEndsWhileWaiting(t *testing.T) {
+	f := newFake()
+	f.stopLag = true
+	f.stopEnds = true
+	d := newTestDriver(t, f, testConfig)
+	ctx := context.Background()
+	sb := startKeptSandbox(t, d)
+
+	err := d.Stop(ctx, sb)
+	if err == nil || !strings.Contains(err.Error(), "SANDBOX_STATE_ENDED") {
+		t.Fatalf("Stop of a sandbox that ended = %v, want an error naming its state", err)
+	}
+	if got := f.states(); got[len(got)-1] == StateStopped {
+		t.Fatalf("labels recorded %v for an ended sandbox", got)
 	}
 }
 
