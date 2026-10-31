@@ -31,7 +31,7 @@ test=(go test -count=1 -v -timeout 15m ./e2e/...)
 # network rules.
 if [ "${TOSHI_DRIVER_E2E_HIDE_NETWORK_HELPER:-}" = 1 ]; then
   test=(unshare --map-root-user --mount sh -c \
-    'mount --bind /dev/null /run/toshi-agent-netsets.sock && exec "$@"' sh "${test[@]}")
+    'mount --bind /dev/null /run/toshi-host-netsets.sock && exec "$@"' sh "${test[@]}")
 fi
 
 cd "$root"
