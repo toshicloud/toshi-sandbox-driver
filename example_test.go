@@ -94,6 +94,44 @@ func ExampleDriver_Delete() {
 	}
 }
 
+func ExampleDriver_Stop() {
+	ctx := context.Background()
+
+	cfg, err := driver.ConfigFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	d, err := driver.New(cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	sb, err := d.Create(ctx, "task-43", driver.Spec{Size: "toshi-linux-2x", MaxDuration: 30 * time.Minute, KeepVM: true})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := d.WaitRunning(ctx, sb); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := d.Stop(ctx, sb); err != nil {
+		log.Fatal(err) // created without KeepVM, or ended
+	}
+	// sb.State() is driver.StateStopped; Execute fails with driver.ErrStopped.
+
+	if err := d.Start(ctx, sb); err != nil {
+		log.Fatal(err)
+	}
+	if err := d.WaitRunning(ctx, sb); err != nil {
+		log.Fatal(err)
+	}
+	res, err := d.Execute(ctx, sb, driver.Command{Argv: []string{"ls"}, Stdout: os.Stdout})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.ExitCode)
+}
+
 func ExampleDriver_Recover() {
 	ctx := context.Background()
 
