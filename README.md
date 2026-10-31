@@ -312,7 +312,7 @@ stack's logs.
 ## Versions
 
 `go.mod` pins the client and `go.toshicloud.io/api` to one version each:
-`go.toshicloud.io/toshi` v0.5.0 and `go.toshicloud.io/api` v0.4.1. Moving
+`go.toshicloud.io/toshi` v0.5.1 and `go.toshicloud.io/api` v0.4.1. Moving
 either to another version is one pull request that changes `go.mod` and
 `go.sum`.
 
