@@ -53,12 +53,16 @@ type Result struct {
 // sandbox as StateBusy, streams standard input and output, cancels the
 // command at its timeout, and records the sandbox as StateReady once the
 // command ended. A stopped sandbox runs nothing: Execute returns ErrStopped
-// before it records StateBusy or sends the command. When Execute fails, its
-// stream is lost or ctx ends before the command ended, the driver cannot
-// always tell whether the command started or still runs, so Execute returns
-// the error and leaves the sandbox StateBusy.
+// before it records StateBusy or sends the command, or ErrHeld when an
+// operator holds it. When Execute fails, its stream is lost or ctx ends
+// before the command ended, the driver cannot always tell whether the
+// command started or still runs, so Execute returns the error and leaves
+// the sandbox StateBusy.
 func (d *Driver) Execute(ctx context.Context, sb *Sandbox, cmd Command) (Result, error) {
 	if sb.State() == StateStopped {
+		if held, ok := heldStatus(sb); ok {
+			return Result{}, held
+		}
 		return Result{}, fmt.Errorf("driver: execute in sandbox %s: %w", sb.ID(), ErrStopped)
 	}
 	if err := d.setState(ctx, sb, StateBusy); err != nil {

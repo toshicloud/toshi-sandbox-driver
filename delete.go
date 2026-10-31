@@ -10,15 +10,19 @@ import (
 
 // Delete deletes the sandbox with Sandboxes.Delete, which stops it and
 // cancels the commands in it, and returns the delete's operation; the
-// sandbox is gone once the operation is done. Its request key is derived
-// from the scope and the driver's and the sandbox's names, so a call
-// repeated after a lost answer returns the first call's operation.
+// sandbox is gone once the operation is done. A sandbox an operator holds
+// fails with ErrHeld. Its request key is derived from the scope and the
+// driver's and the sandbox's names, so a call repeated after a lost answer
+// returns the first call's operation.
 func (d *Driver) Delete(ctx context.Context, sb *Sandbox) (*Operation, error) {
 	resp, err := d.client.Workload().Sandboxes().Delete(ctx, &workspacev1.DeleteSandboxRequest{
 		Id:         sb.ID(),
 		RequestKey: d.requestKey("delete", sb.Name),
 	})
 	if err != nil {
+		if held, ok := d.refused(ctx, "delete", sb, err); ok {
+			return nil, held
+		}
 		return nil, fmt.Errorf("driver: delete sandbox %s: %w", sb.ID(), err)
 	}
 	return operationFrom(resp.GetOperation()), nil
