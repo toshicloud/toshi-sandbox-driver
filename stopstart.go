@@ -6,16 +6,20 @@ import (
 	"time"
 
 	workspacev1 "go.toshicloud.io/api/workspacev1"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // Stop stops the sandbox with Sandboxes.Stop, which ends its run and every
-// execution in it, keeps its VM, and records the sandbox as StateStopped. The
-// commands in it are cancelled. A sandbox created without KeepVM, or one that
-// has ended, fails with FAILED_PRECONDITION, and one an operator holds with
-// ErrHeld. Its request key names the transition from the sandbox as last read:
-// a call repeated after a lost answer, with the same *Sandbox, gets the first
-// call's answer, while a later stop of the sandbox, after it changed, gets a
-// key of its own.
+// execution in it and keeps its VM. The server answers before the VM is off,
+// so Stop then waits with WaitSandbox until the sandbox is back in CREATED
+// with its stop time, and records it as StateStopped: once Stop returns,
+// State is StateStopped and Execute returns ErrStopped. ctx bounds the wait.
+// The commands in it are cancelled. A sandbox created without KeepVM, or one
+// that has ended, fails with FAILED_PRECONDITION, and one an operator holds
+// with ErrHeld. Its request key names the transition from the sandbox as last
+// read: a call repeated after a lost answer, with the same *Sandbox, gets the
+// first call's answer, while a later stop of the sandbox, after it changed,
+// gets a key of its own.
 func (d *Driver) Stop(ctx context.Context, sb *Sandbox) error {
 	resp, err := d.client.Workload().Sandboxes().Stop(ctx, &workspacev1.StopSandboxRequest{
 		Id:         sb.ID(),
@@ -28,6 +32,24 @@ func (d *Driver) Stop(ctx context.Context, sb *Sandbox) error {
 		return fmt.Errorf("driver: stop sandbox %s: %w", sb.ID(), err)
 	}
 	sb.sandbox = resp.GetSandbox()
+	if !stoppedStatus(sb.sandbox.GetStatus()) {
+		waited, err := d.client.Workload().Sandboxes().Wait(ctx, &workspacev1.WaitSandboxRequest{
+			Id:      sb.ID(),
+			States:  []workspacev1.SandboxState{workspacev1.SandboxState_SANDBOX_STATE_CREATED, workspacev1.SandboxState_SANDBOX_STATE_ENDED},
+			Timeout: durationpb.New(waitBound),
+		})
+		if err != nil {
+			return fmt.Errorf("driver: wait for sandbox %s to stop: %w", sb.ID(), err)
+		}
+		sb.sandbox = waited.GetSandbox()
+		if status := sb.sandbox.GetStatus(); !stoppedStatus(status) {
+			if held, ok := heldStatus(sb); ok {
+				return held
+			}
+			return fmt.Errorf("driver: sandbox %s is %s after the stop, not stopped (end reason %s, stop reason %s)",
+				sb.ID(), status.GetState(), status.GetEndReason(), status.GetStopReason())
+		}
+	}
 	return d.setState(ctx, sb, StateStopped)
 }
 

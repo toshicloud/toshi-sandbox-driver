@@ -228,13 +228,19 @@ func (s *Sandbox) ID() string { return s.sandbox.GetId() }
 // before the label was rewritten or by a crash in between, is StateStarting;
 // otherwise State is the label's.
 func (s *Sandbox) State() string {
-	if status := s.sandbox.GetStatus(); status.GetState() == workspacev1.SandboxState_SANDBOX_STATE_CREATED && status.GetStoppedAt() != nil {
+	if stoppedStatus(s.sandbox.GetStatus()) {
 		return StateStopped
 	}
 	if state := s.sandbox.GetLabels()[LabelState]; state != StateStopped {
 		return state
 	}
 	return StateStarting
+}
+
+// stoppedStatus reports whether status is a stopped sandbox's: in CREATED,
+// with a stop time.
+func stoppedStatus(status *workspacev1.SandboxStatus) bool {
+	return status.GetState() == workspacev1.SandboxState_SANDBOX_STATE_CREATED && status.GetStoppedAt() != nil
 }
 
 // Labels returns a copy of the sandbox's labels.

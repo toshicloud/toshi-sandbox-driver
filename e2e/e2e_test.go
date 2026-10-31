@@ -278,31 +278,8 @@ func TestSandboxFlow(t *testing.T) {
 	if err := d.Stop(ctx, kept); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	// The server answers the stop before the VM is off; the sandbox is
-	// stopped once it is back in CREATED, and the driver reads it again then.
-	answered := kept.Proto().GetStatus().GetState()
-	if _, err := client.Workload().Sandboxes().Wait(ctx, &workspacev1.WaitSandboxRequest{
-		Id:      kept.ID(),
-		States:  []workspacev1.SandboxState{workspacev1.SandboxState_SANDBOX_STATE_CREATED},
-		Timeout: durationpb.New(time.Minute),
-	}); err != nil {
-		t.Fatalf("wait for the stop: %v", err)
-	}
-	afterStop, err := d.Recover(ctx, "")
-	if err != nil {
-		t.Fatalf("Recover after the stop: %v", err)
-	}
-	kept = nil
-	for _, s := range afterStop.Sandboxes {
-		if s.Name == "e2e-kept" {
-			kept = s
-		}
-	}
-	if kept == nil {
-		t.Fatalf("Recover after the stop found %v, not e2e-kept", afterStop.Sandboxes)
-	}
 	if state := kept.State(); state != driver.StateStopped {
-		t.Fatalf("after the stop: state %q, want %q", state, driver.StateStopped)
+		t.Fatalf("after Stop: state %q, want %q", state, driver.StateStopped)
 	}
 	if _, err := d.Execute(ctx, kept, driver.Command{Argv: []string{"true"}}); !errors.Is(err, driver.ErrStopped) || !strings.Contains(err.Error(), kept.ID()) {
 		t.Fatalf("Execute on the stopped sandbox = %v, want ErrStopped naming %s", err, kept.ID())
@@ -325,7 +302,7 @@ func TestSandboxFlow(t *testing.T) {
 	if op, err = d.WaitOperation(ctx, op.ID); err != nil || !op.Done {
 		t.Fatalf("WaitOperation for the kept sandbox: %v, %v", op, err)
 	}
-	t.Logf("step 8: %s stopped (the stop answered in %s), refused a command while stopped, started again in %s with its file kept, and deleted", kept.ID(), answered, restarted.Round(time.Second))
+	t.Logf("step 8: %s stopped, refused a command right after Stop, started again in %s with its file kept, and deleted", kept.ID(), restarted.Round(time.Second))
 
 	// The calls of the flow.
 	procedures, counts := counted.list()
