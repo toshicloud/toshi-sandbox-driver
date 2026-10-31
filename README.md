@@ -1,29 +1,32 @@
-# toshi-sandbox-driver
+<p align="center">
+  <img src="docs/assets/toshi-logo.svg" alt="Toshi" width="120">
+</p>
 
-A Go package that runs sandboxes on Toshi for an agent orchestrator. It
-uses only the public Workspace API, `toshi.workspace.v1`, through the
-[toshi-go](https://pkg.go.dev/go.toshicloud.io/toshi) client,
-`go.toshicloud.io/toshi`, and imports no other Toshi module but `go.toshicloud.io/api`.
-Before v0.2.0 that client was the module
-[github.com/toshicloud/toshi-go](https://github.com/toshicloud/toshi-go).
+<h1 align="center">toshi-sandbox-driver</h1>
 
-A sandbox is a VM that runs until its owner stops it or its maximum
-duration passes. The driver:
+<p align="center">Run sandboxes on Toshi from an agent orchestrator.</p>
 
-1. reads its token, project and environment from the environment, and
-   checks them with `ListProjects`;
-2. creates a sandbox with labels and a request key;
-3. waits until it runs and reads it;
-4. runs commands in it, feeding standard input and streaming output;
-5. cancels a command that runs too long;
-6. records its own state for the sandbox in a label;
-7. after a restart, lists its sandboxes by that label, catches up on the
-   events since its stored cursor, and follows from there;
-8. stops a sandbox whose VM is kept, powering the VM off on its disk, and
-   starts it again;
-9. deletes the sandbox and follows the delete operation.
+<p align="center">
+  <img alt="licence" src="https://img.shields.io/badge/licence-Apache--2.0-blue">
+  <img alt="go" src="https://img.shields.io/badge/go-1.26%2B-00ADD8">
+  <img alt="status" src="https://img.shields.io/badge/status-early-orange">
+</p>
 
-## Use
+<p align="center">
+  <a href="docs/usage.md">Get started</a> ·
+  <a href="docs/usage.md">Docs</a> ·
+  <a href="https://github.com/toshicloud/toshi-sandbox-driver/issues">Issues</a>
+</p>
+
+A Go package for an agent orchestrator that needs sandboxes: it creates a Toshi sandbox, runs commands in it with standard input and streamed output, stops and starts it when its VM is kept, recovers its sandboxes after a restart, and deletes it. It uses only the public Workspace API, through the [Toshi Go client](https://pkg.go.dev/go.toshicloud.io/toshi).
+
+> **Early stage.** v0.1.0 is tagged; `main` is ahead of it with stop and start of a sandbox whose VM is kept.
+> Interfaces may change before 1.0.
+> Read the [release notes](https://github.com/toshicloud/toshi-sandbox-driver/releases) when upgrading.
+
+## Quick start
+
+Set `TOSHI_SERVER`, `TOSHI_TOKEN`, `TOSHI_PROJECT`, `TOSHI_ENV` and `TOSHI_DRIVER_NAME`, then create a driver, run a command in a sandbox and delete it:
 
 <!-- ExampleNew -->
 ```go
@@ -63,23 +66,6 @@ if err != nil {
 // res.ExitCode, res.Cancelled, res.TimedOut
 ```
 
-A sandbox created with `KeepVM` can be stopped and started again:
-
-<!-- ExampleDriver_Stop -->
-```go
-if err := d.Stop(ctx, sb); err != nil {
-	log.Fatal(err) // created without KeepVM, or ended
-}
-// sb.State() is driver.StateStopped; Execute fails with driver.ErrStopped.
-
-if err := d.Start(ctx, sb); err != nil {
-	log.Fatal(err)
-}
-if err := d.WaitRunning(ctx, sb); err != nil {
-	log.Fatal(err)
-}
-```
-
 <!-- ExampleDriver_Delete -->
 ```go
 op, err := d.Delete(ctx, sb)
@@ -92,246 +78,22 @@ if err != nil {
 }
 ```
 
-After a restart:
+The [usage guide](docs/usage.md) continues with stop and start, recovery after a restart and watching.
 
-<!-- ExampleDriver_Recover -->
-```go
-rec, err := d.Recover(ctx, stored) // stored: the last cursor saved, or ""
-if err != nil {
-	log.Fatal(err)
-}
-// rec.Sandboxes, rec.Events, rec.Cursor
-err = d.Watch(ctx, rec.Cursor, func(u driver.Update) error {
-	// u.Sandbox changed, or u.Event happened. Handle it, then save
-	// u.Cursor if it is set: only events carry one.
-	return nil
-})
-if err != nil {
-	log.Fatal(err)
-}
-```
+## Documentation
 
-- `New` passes its options to toshi-go's `toshi.New`, so an option such as
-  `toshi.WithServer`, `toshi.WithToken`, `toshi.WithCAFile`,
-  `toshi.WithHTTPClient` or `toshi.WithRetryPolicy` replaces what the
-  environment or toshi-go's default would give. The scope is always the
-  configured project and environment, whatever the options say.
-- `Check` lists the projects the token sees and fails unless the
-  configured project has the configured environment.
-- `Create` creates a sandbox with three labels: `toshi-sandbox-driver`
-  (the driver's name), `toshi-sandbox-driver/sandbox` (the sandbox's
-  name) and `toshi-sandbox-driver/state`, exported as `LabelDriver`,
-  `LabelSandbox` and `LabelState`. `Spec.Size` names the machine size, for
-  example `toshi-linux-2x`. `MaxDuration` is required: a
-  whole number of minutes, at least one. The request key comes from the
-  project, the environment and the two names, so creating the same name
-  again with the same spec, after a lost answer or a restart, returns the
-  first sandbox: a name is for one sandbox. The same name with another
-  spec fails with `FAILED_PRECONDITION`. `Spec.KeepVM` keeps the
-  sandbox's VM, powered off on its disk, while it is stopped; the
-  workspace must allow kept VMs, or `Create` fails with
-  `FAILED_PRECONDITION`.
-- `WaitRunning` waits until the sandbox runs and reads it; it fails if
-  the sandbox ended instead, and with `ErrStopped` at once if it is
-  stopped. A sandbox an operator holds fails with `ErrHeld` instead: here,
-  in `Execute`, and in a refused `Start`, `Stop` or `Delete`, its
-  `HeldError` names the hold's reason, when it began and where to write,
-  and `Unwrap` gives the server's refusal. It has no bound of its own, so
-  give `ctx` a deadline.
-- `Execute` runs a command, feeding `Stdin` and streaming its output, and
-  cancels it with `CancelExecution` when `Timeout` passes; a zero
-  `Timeout` sets no limit. `Argv[0]` is looked up on the guest's `PATH`,
-  `Env` is added to the command's environment and `Cwd` is its working
-  directory (empty: the guest's default). A nil `Stdin` closes standard
-  input at once, and a nil `Stdout` or `Stderr` discards that stream. A
-  non-zero exit is a result, not an error: `Result` holds `ExecutionID`,
-  `ExitCode` (-1 when the command ended without one), `Cancelled` and
-  `TimedOut`. A read of `Stdin` that fails before the command ended closes
-  its input and fails `Execute`. On a stopped sandbox `Execute` fails
-  with `ErrStopped` and runs nothing.
-- `Stop` stops a sandbox created with `KeepVM` with `StopSandbox`: its
-  run and every command in it end, and its VM is powered off with its
-  disk kept. The server answers before the VM is off, so `Stop` then
-  waits with `WaitSandbox`, bounded by its context, until the sandbox is
-  stopped: once it returns, `Execute` fails with `ErrStopped`. `Start`
-  queues a run on that VM with `StartSandbox`; then
-  `WaitRunning` waits until it runs. Either fails with
-  `FAILED_PRECONDITION` on a sandbox created without `KeepVM` or one that
-  has ended. Each call's request key comes from the scope, the two names
-  and the sandbox as last read, so a call repeated with the same `Sandbox`
-  after a lost answer gets the first call's answer, and the next stop or
-  start gets a key of its own. A call made after the sandbox was read
-  again, as after a restart, is answered by its state: stopping a stopped
-  sandbox, or starting a queued or running one, returns it as it is.
-- The state label (`StateStarting`, `StateReady`, `StateBusy` and
-  `StateStopped`) is `starting` after `Create` and `Start`, `ready` once
-  `WaitRunning` has seen the sandbox run and between commands, `busy`
-  while a command runs, and `stopped` after `Stop`. When `Execute` fails
-  or its stream is lost, the driver cannot always tell whether the
-  command started or still runs, so the label stays `busy`, and
-  `WaitRunning` leaves it so. `State` reads the sandbox's status as well
-  as its label: a kept sandbox Toshi stopped itself, for its spending cap
-  or a suspension, is `stopped`, and one whose label still says `stopped`
-  after a start is `starting`.
-- `Recover` lists the sandboxes labelled with the driver's name with
-  `Sandboxes.List`. Given the cursor saved by an earlier run, it reads the
-  events after it with `ListEvents` and keeps the execution and emitted
-  events of the driver's sandboxes, and the delete events of those deleted
-  since. Each sandbox event carries the sandbox after its change, and
-  `Recover` applies them in order to the list, so `rec.Sandboxes` holds
-  the sandboxes as they are at `rec.Cursor`, including one created after
-  the list was read and one stopped or started since. A sandbox is the driver's when it carries the
-  driver's label. Given `""`, on a first start, it reads no events and
-  returns the list's position. A cursor the server no longer keeps fails
-  with `OUT_OF_RANGE`; start again with `""`.
-- `Watch` follows from `rec.Cursor` with `Sandboxes.Watch` and
-  `WatchEvents`, each resuming after a dropped connection, and calls the
-  function with one update at a time. Neither call filters by label, so
-  the driver keeps the changes of its sandboxes, and the events of those
-  `Recover` returned or whose sandbox events in `WatchEvents`, which come
-  before their executions', show them as its own. The two watches are not
-  ordered with each other: an execution's event can come before the change
-  that shows its sandbox. Only event updates carry a cursor; save it
-  after the event is handled. The server delivers at least once, so after
-  a restart an event can come again with the same `Event.Cursor`: handle it
-  idempotently or drop the repeat. `Watch` returns when `ctx` ends, a
-  watch ends or the function returns an error. A watch ends when
-  toshi-go's reconnect attempts run out (its retry policy's `MaxAttempts`,
-  five by default);
-  then `Recover` from the saved cursor and `Watch` again.
-- `Delete` deletes the sandbox with `Sandboxes.Delete`, under a request key
-  from the scope and the two names, and returns the delete's operation;
-  `WaitOperation` reads it with `GetOperation` and waits with
-  `WaitOperation` until it is done, and sets its `Err` if the operation
-  failed.
+- [Usage](docs/usage.md): every call, in the order a sandbox lives
+- [Types](docs/types.md): `Sandbox`, `Operation`, `Event` and the rest
+- [Configuration](docs/configuration.md): the environment variables
+- [Upgrading and versions](docs/upgrading.md)
+- [End-to-end test](docs/e2e.md) and [development checks](docs/development.md)
+- [Package reference](https://pkg.go.dev/github.com/toshicloud/toshi-sandbox-driver) on pkg.go.dev
+- [The Toshi API](https://github.com/toshicloud/toshi-api) the driver calls
+- [Security](SECURITY.md) · [Licence](LICENSE)
 
-## Types
+## Status and support
 
-The exported types carry the API's data without naming its generated
-messages, so a caller needs the API module only for a field the driver does
-not carry.
+Issues and questions go to [GitHub issues](https://github.com/toshicloud/toshi-sandbox-driver/issues).
+Security reports follow [SECURITY.md](SECURITY.md).
 
-- `Sandbox` is one sandbox as the driver last read it: `Name`, as the
-  caller gave it; `ID`; `State`, the driver's own state from its label
-  and status;
-  `Labels`, a copy; and `Proto` for the whole message.
-- `Operation` is a long-running action such as a delete: `ID`, `Done`, and
-  `Err`, which holds the server's message when the operation failed.
-- `Event` is one event of the driver's sandboxes: `Type`, `SandboxID`,
-  `Time`, `Cursor`, the position after it, and the payload of its family:
-  `Execution` for an execution event and `Emitted` for one a guest
-  emitted, nil for another event.
-- `ExecutionEvent` is an execution starting or ending: `ExecutionID`,
-  `Argv`, `ExitCode` (-1 when it ended without one) and `Cancelled`.
-- `EmittedEvent` is an event a guest emitted: `Data`.
-- `EventType` is the driver's own type, with one constant per event type
-  the driver reports: `EventWorkloadCreated`,
-  `EventWorkloadStateChanged`, `EventWorkloadUpdated`,
-  `EventWorkloadDeleted`, `EventExecutionStarted`, `EventExecutionEnded`
-  and `EventEmitted`. `EventUnspecified`, the zero value, is no event the
-  driver reports; an event of another type is dropped.
-- `Proto` on `Sandbox`, `Operation` and `Event` returns the generated
-  message, for code that needs a field the driver does not carry.
-
-## Upgrading
-
-The exported types no longer name the API's generated messages.
-`Sandbox`'s `Sandbox` field is gone: read a sandbox with `ID`, `State`,
-`Labels` and `Proto`. `Delete` and `WaitOperation` return an `Operation`,
-so the ID is `Operation.ID` and a failed operation sets `Operation.Err`
-instead of returning an error. `Recovery.Events` is `[]*Event` and
-`Update.Type` is an `EventType`; an event's generated fields are the
-driver's own, with `Execution` and `Emitted` holding the typed payload.
-`Proto()` returns the generated message where a field the driver does not
-carry is needed.
-
-## Configuration
-
-Everything comes from the environment.
-
-| Variable | Meaning |
-| --- | --- |
-| `TOSHI_SERVER` | The control plane's base URL, for example `https://toshi.example.com`. |
-| `TOSHI_TOKEN` | A workspace API token. |
-| `TOSHI_TOKEN_FILE` | A file holding the token, read when `TOSHI_TOKEN` is not set. |
-| `TOSHI_CA_FILE` | Optional. A PEM bundle to trust besides the system's roots. |
-| `TOSHI_PROJECT` | The project the sandboxes run in, for example `default`. Required. |
-| `TOSHI_ENV` | One of the project's environments, for example `production`. Required. |
-| `TOSHI_DRIVER_NAME` | This driver's name, unique among the drivers of the environment. Required. |
-
-The server, the token and the CA bundle are read by toshi-go. The API
-has no default project or environment, and a default driver name would
-let two drivers take each other's sandboxes, so the driver refuses to
-start without all three. Running commands needs HTTP/2, which the server
-offers over https.
-
-## Checks
-
-```sh
-scripts/check.sh
-```
-
-It fails if the module's packages or their tests depend on a
-`github.com/toshicloud` or `go.toshicloud.io` module other than
-`go.toshicloud.io/toshi` and `go.toshicloud.io/api` when built for Linux or for
-Windows, or if they cannot be listed
-(`scripts/module-guard.sh`, itself tested by
-`scripts/module-guard-test.sh`). Then it builds the module for the host
-and for Windows, runs `go vet`, golangci-lint (version pinned in the
-script, configuration in `.golangci.yml`) and the unit tests.
-
-## End-to-end test
-
-`e2e/` runs steps 1 to 9 against a served Toshi, a second driver
-recovering the first one's sandbox from a saved cursor, and fails unless
-the driver made `ListProjects` and the 15 `WorkloadService` calls it
-uses: the sandbox calls `CreateSandbox`, `WaitSandbox`, `GetSandbox`,
-`UpdateSandbox`, `ListSandboxes`, `WatchSandboxes`, `StopSandbox`,
-`StartSandbox` and `DeleteSandbox`; the execution calls `Execute` and
-`CancelExecution`; the event calls `ListEvents` and `WatchEvents`; and
-the operation calls `GetOperation` and `WaitOperation`. The served Toshi
-is `toshi serve` with its all-in-one agent, which runs each sandbox in a
-qemu VM. The operator grants the workspace one kept VM and turns its
-kept-VM setting on, and the agent enrolls with the workspace's own
-enrollment token, so it is a host of the workspace's own that keeps VMs.
-Step 8 creates a sandbox with `KeepVM`, writes a file in it, stops it,
-gets `ErrStopped` from `Execute`, starts it again and reads the file
-back. It needs KVM and a guest image, so it skips itself unless
-`TOSHI_DRIVER_E2E_BIN` is set, and CI does not set it.
-
-```sh
-TOSHI_SERVER_REPOSITORY=<repository URL> \
-TOSHI_DRIVER_E2E_IMAGE_DIR=/path/to/images \
-TOSHI_DRIVER_E2E_IMAGE=ubuntu-24.04-<version> \
-  scripts/e2e.sh
-```
-
-The script clones the server repository that `TOSHI_SERVER_REPOSITORY`
-names at the commit `e2e/pin.env` names, so it needs read access to that
-repository, then builds toshi and runs
-`go test ./e2e/...` against it. The image is `<dir>/<image>.qcow2`, built
-with `ubuntu-24.04/build.sh` in the
-[toshi-images](https://github.com/toshicloud/toshi-images) repository and
-installed with its `install.sh`. To serve a toshi binary of your own,
-set `TOSHI_DRIVER_E2E_BIN` with the two image variables and run
-`go test -v ./e2e/...`. `TOSHI_DRIVER_E2E_ACCEL` changes the qemu
-accelerator (default `kvm`), and `TOSHI_DRIVER_E2E_LOG_DIR` keeps the
-stack's logs.
-
-On a host that runs Toshi's network helper (its socket is
-`/run/toshi-agent-netsets.sock`), the agent writes each VM's network
-rules in the VM's own cgroup, and the stack gives its VMs none, so the
-test stops at once. With `TOSHI_DRIVER_E2E_HIDE_NETWORK_HELPER=1`, the
-script runs the test in a user and mount namespace in which that socket
-is `/dev/null`, and the agent writes no network rules.
-
-## Versions
-
-`go.mod` pins the client and `go.toshicloud.io/api` to one version each:
-`go.toshicloud.io/toshi` v0.6.0 and `go.toshicloud.io/api` v0.5.0. Moving
-either to another version is one pull request that changes `go.mod` and
-`go.sum`.
-
-## Licence
-
-Apache License 2.0, see LICENSE.
+Apache-2.0

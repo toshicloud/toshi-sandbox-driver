@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -22,40 +23,45 @@ type block struct {
 	lines []string
 }
 
-// TestREADMEExamples fails when a Go block in README.md is not a run of
-// consecutive lines in the body of the example the comment above it names, so
-// the README cannot drift from code that compiles.
+// TestREADMEExamples fails when a Go block in README.md or a page of docs/ is
+// not a run of consecutive lines in the body of the example the comment above
+// it names, so the documentation cannot drift from code that compiles.
 func TestREADMEExamples(t *testing.T) {
-	readme, err := os.ReadFile("README.md")
+	pages, err := filepath.Glob("docs/*.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocks := readmeBlocks(t, string(readme))
-	if n := strings.Count(string(readme), "```go"); n != len(blocks) {
-		t.Errorf("README.md has %d Go blocks, %d of them named by an example", n, len(blocks))
-	}
-
 	examples, err := os.ReadFile("example_test.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	bodies := exampleBodies(t, examples)
 
-	for _, b := range blocks {
-		body, ok := bodies[b.name]
-		if !ok {
-			t.Errorf("README.md names %s, which example_test.go does not define", b.name)
-			continue
+	for _, page := range append([]string{"README.md"}, pages...) {
+		doc, err := os.ReadFile(page)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !runs(body, b.lines) {
-			t.Errorf("%s: the README.md block is not a run of lines in the example: %s", b.name, firstDifference(body, b.lines))
+		blocks := readmeBlocks(t, page, string(doc))
+		if n := strings.Count(string(doc), "```go"); n != len(blocks) {
+			t.Errorf("%s has %d Go blocks, %d of them named by an example", page, n, len(blocks))
+		}
+		for _, b := range blocks {
+			body, ok := bodies[b.name]
+			if !ok {
+				t.Errorf("%s names %s, which example_test.go does not define", page, b.name)
+				continue
+			}
+			if !runs(body, b.lines) {
+				t.Errorf("%s: %s: the block is not a run of lines in the example: %s", page, b.name, firstDifference(body, b.lines))
+			}
 		}
 	}
 }
 
 // readmeBlocks returns the Go blocks of readme that a comment above them
 // names, in the order they appear.
-func readmeBlocks(t *testing.T, readme string) []block {
+func readmeBlocks(t *testing.T, page, readme string) []block {
 	t.Helper()
 	lines := strings.Split(readme, "\n")
 	var blocks []block
@@ -67,18 +73,18 @@ func readmeBlocks(t *testing.T, readme string) []block {
 		}
 		name := m[1]
 		if seen[name] {
-			t.Fatalf("README.md names %s twice", name)
+			t.Fatalf("%s names %s twice", page, name)
 		}
 		seen[name] = true
 		if i+1 == len(lines) || strings.TrimSpace(lines[i+1]) != "```go" {
-			t.Fatalf("README.md: the comment for %s is not followed by a Go block", name)
+			t.Fatalf("%s: the comment for %s is not followed by a Go block", page, name)
 		}
 		end := i + 2
 		for end < len(lines) && strings.TrimSpace(lines[end]) != "```" {
 			end++
 		}
 		if end == len(lines) {
-			t.Fatalf("README.md: the block for %s is not closed", name)
+			t.Fatalf("%s: the block for %s is not closed", page, name)
 		}
 		blocks = append(blocks, block{name: name, lines: normalize(strings.Join(lines[i+2:end], "\n"))})
 		i = end
