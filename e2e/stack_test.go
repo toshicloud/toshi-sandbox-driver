@@ -153,8 +153,10 @@ target = 1
 		"--action", "created",
 	)
 	waitTenant(t, cfg.bin, operatorEnv, installationID, 30*time.Second)
+	// An operator acting in a workspace states why; the server records it.
 	token := strings.TrimSpace(run(t, operatorEnv, cfg.bin, "token", "create",
 		"--workspace", installationID,
+		"--reason", "the sandbox driver's end-to-end test",
 		"--name", "sandbox-driver-e2e",
 		"--project", projectName,
 	))
