@@ -22,8 +22,8 @@ import (
 	driver "github.com/toshicloud/toshi-sandbox-driver"
 )
 
-// TestSandboxFlow runs steps 1 to 8 against a served stack and checks that
-// the driver made every Workspace call but WatchOutput. It is skipped
+// TestSandboxFlow runs steps 1 to 9 against a served stack and checks that
+// the driver made every call of the flow. It is skipped
 // unless TOSHI_DRIVER_E2E_BIN names a toshi binary; it then needs
 // TOSHI_DRIVER_E2E_IMAGE_DIR and TOSHI_DRIVER_E2E_IMAGE, a guest image
 // <dir>/<image>.qcow2 the binary's agent can run, and KVM unless
@@ -61,7 +61,15 @@ func TestSandboxFlow(t *testing.T) {
 		}
 	}
 
+	// With Toshi's network helper on the host, the agent writes each VM's
+	// network rules through it, in the VM's own cgroup; the stack's VMs have
+	// none, so their jobs would fail.
+	if info, err := os.Stat(networkHelperSocket); err == nil && info.Mode()&os.ModeSocket != 0 {
+		t.Fatalf("this host runs Toshi's network helper (%s), and the stack's VMs have no cgroup of their own for its rules: run scripts/e2e.sh with TOSHI_DRIVER_E2E_HIDE_NETWORK_HELPER=1", networkHelperSocket)
+	}
+
 	st := startStack(t, cfg)
+	t.Logf("stack: host %s of workspace %s, keep_vm %t, network enforced %t (%s)", st.host.ID, st.host.OwnerTenant, st.host.KeepVM, st.host.NetworkEnforced, st.host.NetworkReason)
 	// The driver's calls are counted; the test's own checks go through a
 	// client of their own.
 	t.Setenv("TOSHI_CA_FILE", "")
@@ -225,7 +233,7 @@ func TestSandboxFlow(t *testing.T) {
 	})
 	t.Logf("step 7: Watch reported execution %s ending and %s turning busy", res.ExecutionID, sb.ID())
 
-	// Step 8: deleted, and the delete's operation followed to its end.
+	// Step 9: deleted, and the delete's operation followed to its end.
 	op, err := d.Delete(ctx, sb)
 	if err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -249,9 +257,77 @@ func TestSandboxFlow(t *testing.T) {
 	if !errors.Is(followErr, context.Canceled) {
 		t.Fatalf("Watch ended with %v, want its context's end", followErr)
 	}
-	t.Logf("step 8: %s deleted, operation %s done, and Watch reported the delete", sb.ID(), op.ID)
+	t.Logf("step 9: %s deleted, operation %s done, and Watch reported the delete", sb.ID(), op.ID)
 
-	// Every WorkloadService call but WatchOutput, and ListProjects.
+	// Step 8, once the first sandbox is gone and the host has room: a sandbox
+	// whose VM is kept is stopped, refuses a command while stopped, and starts
+	// again on the same disk.
+	kept, err := d.Create(ctx, "e2e-kept", driver.Spec{Size: sandboxSize, MaxDuration: 10 * time.Minute, KeepVM: true})
+	if err != nil {
+		t.Fatalf("Create with KeepVM: %v", err)
+	}
+	keptID := kept.ID()
+	t.Cleanup(func() { deleteSandbox(t, client, keptID) })
+	if err := d.WaitRunning(ctx, kept); err != nil {
+		t.Fatalf("WaitRunning the kept sandbox: %v", err)
+	}
+	const keptFile = "/var/tmp/sandbox-driver-e2e"
+	if res, err := d.Execute(ctx, kept, driver.Command{Argv: []string{"sh", "-c", "echo kept > " + keptFile}}); err != nil || res.ExitCode != 0 {
+		t.Fatalf("Execute before the stop: %+v, %v", res, err)
+	}
+	if err := d.Stop(ctx, kept); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	// The server answers the stop before the VM is off; the sandbox is
+	// stopped once it is back in CREATED, and the driver reads it again then.
+	answered := kept.Proto().GetStatus().GetState()
+	if _, err := client.Workload().Sandboxes().Wait(ctx, &workspacev1.WaitSandboxRequest{
+		Id:      kept.ID(),
+		States:  []workspacev1.SandboxState{workspacev1.SandboxState_SANDBOX_STATE_CREATED},
+		Timeout: durationpb.New(time.Minute),
+	}); err != nil {
+		t.Fatalf("wait for the stop: %v", err)
+	}
+	afterStop, err := d.Recover(ctx, "")
+	if err != nil {
+		t.Fatalf("Recover after the stop: %v", err)
+	}
+	kept = nil
+	for _, s := range afterStop.Sandboxes {
+		if s.Name == "e2e-kept" {
+			kept = s
+		}
+	}
+	if kept == nil {
+		t.Fatalf("Recover after the stop found %v, not e2e-kept", afterStop.Sandboxes)
+	}
+	if state := kept.State(); state != driver.StateStopped {
+		t.Fatalf("after the stop: state %q, want %q", state, driver.StateStopped)
+	}
+	if _, err := d.Execute(ctx, kept, driver.Command{Argv: []string{"true"}}); !errors.Is(err, driver.ErrStopped) || !strings.Contains(err.Error(), kept.ID()) {
+		t.Fatalf("Execute on the stopped sandbox = %v, want ErrStopped naming %s", err, kept.ID())
+	}
+	started = time.Now()
+	if err := d.Start(ctx, kept); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := d.WaitRunning(ctx, kept); err != nil {
+		t.Fatalf("WaitRunning after Start: %v", err)
+	}
+	restarted := time.Since(started)
+	stdout.Reset()
+	if res, err := d.Execute(ctx, kept, driver.Command{Argv: []string{"cat", keptFile}, Stdout: &stdout}); err != nil || res.ExitCode != 0 || stdout.String() != "kept\n" {
+		t.Fatalf("Execute after the start: %+v, %v, stdout %q", res, err, stdout.String())
+	}
+	if op, err = d.Delete(ctx, kept); err != nil {
+		t.Fatalf("Delete the kept sandbox: %v", err)
+	}
+	if op, err = d.WaitOperation(ctx, op.ID); err != nil || !op.Done {
+		t.Fatalf("WaitOperation for the kept sandbox: %v, %v", op, err)
+	}
+	t.Logf("step 8: %s stopped (the stop answered in %s), refused a command while stopped, started again in %s with its file kept, and deleted", kept.ID(), answered, restarted.Round(time.Second))
+
+	// The calls of the flow.
 	procedures, counts := counted.list()
 	for i, p := range procedures {
 		t.Logf("call %s x%d", p, counts[i])
@@ -268,8 +344,11 @@ func TestSandboxFlow(t *testing.T) {
 	t.Logf("calls: the driver made all %d calls of the flow", len(flowCalls))
 }
 
-// flowCalls are the calls the flow makes: every WorkspaceService call but
-// WatchOutput, and ProjectService's ListProjects.
+// networkHelperSocket is where Toshi's network helper listens.
+const networkHelperSocket = "/run/toshi-agent-netsets.sock"
+
+// flowCalls are the calls the flow makes: ProjectService's ListProjects and
+// the WorkloadService calls the driver uses.
 var flowCalls = []string{
 	"toshi.workspace.v1.ProjectService/ListProjects",
 	"toshi.workspace.v1.WorkloadService/CreateSandbox",
@@ -282,6 +361,8 @@ var flowCalls = []string{
 	"toshi.workspace.v1.WorkloadService/ListEvents",
 	"toshi.workspace.v1.WorkloadService/WatchSandboxes",
 	"toshi.workspace.v1.WorkloadService/WatchEvents",
+	"toshi.workspace.v1.WorkloadService/StopSandbox",
+	"toshi.workspace.v1.WorkloadService/StartSandbox",
 	"toshi.workspace.v1.WorkloadService/DeleteSandbox",
 	"toshi.workspace.v1.WorkloadService/GetOperation",
 	"toshi.workspace.v1.WorkloadService/WaitOperation",
@@ -330,7 +411,7 @@ func servedCommit(t *testing.T, bin string) string {
 	return ""
 }
 
-// deleteSandbox deletes the sandbox, unless step 8 did, and waits for the
+// deleteSandbox deletes the sandbox, unless step 9 did, and waits for the
 // delete, so its VM is gone before the stack stops.
 func deleteSandbox(t *testing.T, client *toshi.Client, id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

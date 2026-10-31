@@ -23,8 +23,19 @@ git -C "$tmp/server" checkout --quiet --detach "$TOSHI_SERVER_REF"
   go build -o "$tmp/toshi" ./cmd/toshi
 )
 
+test=(go test -count=1 -v -timeout 15m ./e2e/...)
+# The stack's VMs have no cgroup of their own, so on a host that runs Toshi's
+# network helper the agent refuses their network rules. With
+# TOSHI_DRIVER_E2E_HIDE_NETWORK_HELPER=1 the test runs in a user and mount
+# namespace in which the helper's socket is /dev/null, and the agent writes no
+# network rules.
+if [ "${TOSHI_DRIVER_E2E_HIDE_NETWORK_HELPER:-}" = 1 ]; then
+  test=(unshare --map-root-user --mount sh -c \
+    'mount --bind /dev/null /run/toshi-agent-netsets.sock && exec "$@"' sh "${test[@]}")
+fi
+
 cd "$root"
 echo "serving Toshi $TOSHI_SERVER_REF from $tmp/toshi"
 TOSHI_DRIVER_E2E_BIN="$tmp/toshi" \
 TOSHI_DRIVER_E2E_EXPECT_COMMIT="$TOSHI_SERVER_REF" \
-  go test -count=1 -v -timeout 15m ./e2e/...
+  "${test[@]}"

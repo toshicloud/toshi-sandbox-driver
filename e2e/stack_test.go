@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -31,12 +32,13 @@ const (
 	sandboxSize    = "toshi-linux-2x"
 )
 
-// stack is a control plane with its all-in-one agent on one qemu host, and
-// a workspace token for it.
+// stack is a control plane with its all-in-one agent on one qemu host, the
+// workspace's own host, which keeps VMs, and a workspace token for it.
 type stack struct {
 	url    string
 	caPath string
 	token  string
+	host   ownHost
 }
 
 // stackConfig is what startStack needs from the environment.
@@ -61,6 +63,7 @@ func startStack(t *testing.T, cfg stackConfig) stack {
 	operatorPath := writeSecretFile(t, dir, "operator.token", 32)
 	localKeyPath := writeSecretFile(t, dir, "secrets.key", 32)
 	enrollPath := writeSecretFile(t, dir, "enrollment.token", 32)
+	hostEnrollPath := filepath.Join(dir, "host-enrollment.token")
 
 	servePort := freePort(t)
 	fakePort := freePort(t)
@@ -121,7 +124,7 @@ linux = "/opt/actions-runner"
 [[pools]]
 size = %q
 target = 1
-`, baseURL, caPath, enrollPath, mkdir(t, dir, "agent"), cfg.imageDir, mkdir(t, dir, "instances"), cfg.accel, cfg.imageName, sandboxSize))
+`, baseURL, caPath, hostEnrollPath, mkdir(t, dir, "agent"), cfg.imageDir, mkdir(t, dir, "instances"), cfg.accel, cfg.imageName, sandboxSize))
 
 	startChild(t, filepath.Join(dir, "fake.log"), cfg.logDir, cfg.bin, "dev", "github", "serve",
 		"--i-know-this-is-fake",
@@ -129,7 +132,9 @@ target = 1
 		"--installation", installationID+":"+account,
 	)
 	waitPort(t, fakePort, 20*time.Second)
-	startChild(t, filepath.Join(dir, "serve.log"), cfg.logDir, cfg.bin, "serve", "--config", configPath, "--agent-config", agentPath)
+	// The control plane first runs alone: the agent enrolls with the
+	// workspace's own enrollment token, which exists once the workspace does.
+	stopControl := startChild(t, filepath.Join(dir, "control.log"), cfg.logDir, cfg.bin, "serve", "--config", configPath)
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: certPool(t, caPath), MinVersion: tls.VersionTLS12}},
@@ -156,14 +161,70 @@ target = 1
 	// An operator acting in a workspace states why; the server records it.
 	token := strings.TrimSpace(run(t, operatorEnv, cfg.bin, "token", "create",
 		"--workspace", installationID,
-		"--reason", "the sandbox driver's end-to-end test",
+		"--reason", operatorReason,
 		"--name", "sandbox-driver-e2e",
 		"--project", projectName,
 	))
 	if token == "" {
 		t.Fatal("tokens create printed no token")
 	}
-	return stack{url: baseURL, caPath: caPath, token: token}
+
+	// A kept VM needs a workspace allowed one, with the setting on, and a
+	// host of its own that keeps VMs: the operator grants one kept VM, turns
+	// the setting on, and makes the workspace's enrollment token, and the
+	// control plane is served again with the agent enrolling with it.
+	run(t, operatorEnv, cfg.bin, "operator", "workspace", "entitlement", "set", installationID, "keep_vm.max", "1")
+	run(t, operatorEnv, cfg.bin, "workspace", "set", "--workspace", installationID, "--reason", operatorReason, "keep-vm", "on")
+	var enrollment struct {
+		Value string `json:"value"`
+	}
+	out := run(t, operatorEnv, cfg.bin, "workspace", "host", "add", "--workspace", installationID, "--reason", operatorReason, "--json")
+	if err := json.Unmarshal([]byte(out), &enrollment); err != nil || enrollment.Value == "" {
+		t.Fatalf("workspace host add printed no token (%v):\n%s", err, out)
+	}
+	writeFile(t, hostEnrollPath, enrollment.Value+"\n")
+	stopControl()
+	startChild(t, filepath.Join(dir, "serve.log"), cfg.logDir, cfg.bin, "serve", "--config", configPath, "--agent-config", agentPath)
+	waitReady(t, httpClient, baseURL+"/readyz", 60*time.Second)
+	host := waitOwnHost(t, cfg.bin, operatorEnv, installationID, 60*time.Second)
+	return stack{url: baseURL, caPath: caPath, token: token, host: host}
+}
+
+// operatorReason is why the operator acts in the workspace.
+const operatorReason = "the sandbox driver's end-to-end test"
+
+// ownHost is the workspace's own host as the operator API lists it.
+type ownHost struct {
+	ID              string `json:"id"`
+	OwnerTenant     string `json:"ownerTenant"`
+	State           string `json:"state"`
+	KeepVM          bool   `json:"keepVm"`
+	NetworkEnforced bool   `json:"networkEnforced"`
+	NetworkReason   string `json:"networkReason"`
+}
+
+// waitOwnHost waits for a host of the workspace's own that keeps VMs.
+func waitOwnHost(t *testing.T, bin string, env map[string]string, workspace string, timeout time.Duration) ownHost {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last string
+	for time.Now().Before(deadline) {
+		out, _ := runCommand(bin, env, "host", "list", "--json")
+		last = out
+		var payload struct {
+			Hosts []ownHost `json:"hosts"`
+		}
+		if err := json.Unmarshal([]byte(out), &payload); err == nil {
+			for _, h := range payload.Hosts {
+				if h.OwnerTenant == workspace && h.KeepVM {
+					return h
+				}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("no host of workspace %s keeps VMs:\n%s", workspace, last)
+	return ownHost{}
 }
 
 // mintTLS makes a CA and a leaf for 127.0.0.1 and localhost.
@@ -346,10 +407,11 @@ func waitTenant(t *testing.T, bin string, env map[string]string, tenant string, 
 	t.Fatalf("tenant %s did not appear:\n%s", tenant, last)
 }
 
-// startChild runs a child process, logging to path, and kills only it in
-// cleanup. On failure the log's tail is printed; with keepDir set, the log
-// is copied there.
-func startChild(t *testing.T, path, keepDir, bin string, args ...string) {
+// startChild runs a child process, logging to path, and returns a function
+// that stops it: an interrupt, then a kill after 30 seconds. Cleanup kills
+// it if it still runs. On failure the log's tail is printed; with keepDir
+// set, the log is copied there.
+func startChild(t *testing.T, path, keepDir, bin string, args ...string) (stop func()) {
 	t.Helper()
 	file, err := os.Create(path)
 	if err != nil {
@@ -363,9 +425,30 @@ func startChild(t *testing.T, path, keepDir, bin string, args ...string) {
 		_ = file.Close()
 		t.Fatalf("%s: %v", bin, err)
 	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
+	waited := make(chan struct{})
+	go func() {
 		_ = cmd.Wait()
+		close(waited)
+	}()
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			if err := cmd.Process.Signal(os.Interrupt); err != nil {
+				_ = cmd.Process.Kill()
+			}
+			select {
+			case <-waited:
+			case <-time.After(30 * time.Second):
+				_ = cmd.Process.Kill()
+				<-waited
+			}
+		})
+	}
+	t.Cleanup(func() {
+		once.Do(func() {
+			_ = cmd.Process.Kill()
+			<-waited
+		})
 		_ = file.Close()
 		b, err := os.ReadFile(path)
 		if err != nil {
@@ -384,6 +467,7 @@ func startChild(t *testing.T, path, keepDir, bin string, args ...string) {
 			}
 		}
 	})
+	return stop
 }
 
 // run runs a command with the extra environment and fails on a non-zero exit.
