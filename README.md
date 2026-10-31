@@ -19,7 +19,9 @@ duration passes. The driver:
 6. records its own state for the sandbox in a label;
 7. after a restart, lists its sandboxes by that label, catches up on the
    events since its stored cursor, and follows from there;
-8. deletes the sandbox and follows the delete operation.
+8. stops a sandbox whose VM is kept, powering the VM off on its disk, and
+   starts it again;
+9. deletes the sandbox and follows the delete operation.
 
 ## Use
 
@@ -59,6 +61,23 @@ if err != nil {
 	log.Fatal(err)
 }
 // res.ExitCode, res.Cancelled, res.TimedOut
+```
+
+A sandbox created with `KeepVM` can be stopped and started again:
+
+<!-- ExampleDriver_Stop -->
+```go
+if err := d.Stop(ctx, sb); err != nil {
+	log.Fatal(err) // created without KeepVM, or ended
+}
+// sb.State() is driver.StateStopped; Execute fails with driver.ErrStopped.
+
+if err := d.Start(ctx, sb); err != nil {
+	log.Fatal(err)
+}
+if err := d.WaitRunning(ctx, sb); err != nil {
+	log.Fatal(err)
+}
 ```
 
 <!-- ExampleDriver_Delete -->
@@ -108,10 +127,13 @@ if err != nil {
   project, the environment and the two names, so creating the same name
   again with the same spec, after a lost answer or a restart, returns the
   first sandbox: a name is for one sandbox. The same name with another
-  spec fails with `FAILED_PRECONDITION`.
+  spec fails with `FAILED_PRECONDITION`. `Spec.KeepVM` keeps the
+  sandbox's VM, powered off on its disk, while it is stopped; the
+  workspace must allow kept VMs, or `Create` fails with
+  `FAILED_PRECONDITION`.
 - `WaitRunning` waits until the sandbox runs and reads it; it fails if
-  the sandbox ended instead. It has no bound of its own, so give `ctx` a
-  deadline.
+  the sandbox ended instead, and with `ErrStopped` at once if it is
+  stopped. It has no bound of its own, so give `ctx` a deadline.
 - `Execute` runs a command, feeding `Stdin` and streaming its output, and
   cancels it with `CancelExecution` when `Timeout` passes; a zero
   `Timeout` sets no limit. `Argv[0]` is looked up on the guest's `PATH`,
@@ -121,13 +143,29 @@ if err != nil {
   non-zero exit is a result, not an error: `Result` holds `ExecutionID`,
   `ExitCode` (-1 when the command ended without one), `Cancelled` and
   `TimedOut`. A read of `Stdin` that fails before the command ended closes
-  its input and fails `Execute`.
-- The state label (`StateStarting`, `StateReady` and `StateBusy`) is
-  `starting` after `Create`, `ready` once
-  `WaitRunning` has seen the sandbox run and between commands, and `busy`
-  while a command runs. When `Execute` fails or its stream is lost, the
-  driver cannot always tell whether the command started or still runs, so
-  the label stays `busy`, and `WaitRunning` leaves it so.
+  its input and fails `Execute`. On a stopped sandbox `Execute` fails
+  with `ErrStopped` and runs nothing.
+- `Stop` stops a sandbox created with `KeepVM` with `StopSandbox`: its
+  run and every command in it end, and its VM is powered off with its
+  disk kept. `Start` queues a run on that VM with `StartSandbox`; then
+  `WaitRunning` waits until it runs. Either fails with
+  `FAILED_PRECONDITION` on a sandbox created without `KeepVM` or one that
+  has ended. Each call's request key comes from the scope, the two names
+  and the sandbox as last read, so a call repeated with the same `Sandbox`
+  after a lost answer gets the first call's answer, and the next stop or
+  start gets a key of its own. A call made after the sandbox was read
+  again, as after a restart, is answered by its state: stopping a stopped
+  sandbox, or starting a queued or running one, returns it as it is.
+- The state label (`StateStarting`, `StateReady`, `StateBusy` and
+  `StateStopped`) is `starting` after `Create` and `Start`, `ready` once
+  `WaitRunning` has seen the sandbox run and between commands, `busy`
+  while a command runs, and `stopped` after `Stop`. When `Execute` fails
+  or its stream is lost, the driver cannot always tell whether the
+  command started or still runs, so the label stays `busy`, and
+  `WaitRunning` leaves it so. `State` reads the sandbox's status as well
+  as its label: a kept sandbox Toshi stopped itself, for its spending cap
+  or a suspension, is `stopped`, and one whose label still says `stopped`
+  after a start is `starting`.
 - `Recover` lists the sandboxes labelled with the driver's name with
   `Sandboxes.List`. Given the cursor saved by an earlier run, it reads the
   events after it with `ListEvents` and keeps the execution and emitted
@@ -135,7 +173,7 @@ if err != nil {
   since. Each sandbox event carries the sandbox after its change, and
   `Recover` applies them in order to the list, so `rec.Sandboxes` holds
   the sandboxes as they are at `rec.Cursor`, including one created after
-  the list was read. A sandbox is the driver's when it carries the
+  the list was read and one stopped or started since. A sandbox is the driver's when it carries the
   driver's label. Given `""`, on a first start, it reads no events and
   returns the list's position. A cursor the server no longer keeps fails
   with `OUT_OF_RANGE`; start again with `""`.
@@ -167,7 +205,8 @@ messages, so a caller needs the API module only for a field the driver does
 not carry.
 
 - `Sandbox` is one sandbox as the driver last read it: `Name`, as the
-  caller gave it; `ID`; `State`, the driver's own state from its label;
+  caller gave it; `ID`; `State`, the driver's own state from its label
+  and status;
   `Labels`, a copy; and `Proto` for the whole message.
 - `Operation` is a long-running action such as a delete: `ID`, `Done`, and
   `Err`, which holds the server's message when the operation failed.
@@ -236,7 +275,7 @@ script, configuration in `.golangci.yml`) and the unit tests.
 
 ## End-to-end test
 
-`e2e/` runs steps 1 to 8 against a served Toshi, a second driver
+`e2e/` runs steps 1 to 7 and 9 against a served Toshi, a second driver
 recovering the first one's sandbox from a saved cursor, and fails unless
 the driver made `ListProjects` and the 13 `WorkloadService` calls it
 uses: the sandbox calls `CreateSandbox`, `WaitSandbox`, `GetSandbox`,
@@ -246,7 +285,10 @@ the execution calls `Execute` and `CancelExecution`; the event calls
 and `WaitOperation`. The served Toshi is `toshi serve` with its
 all-in-one agent, which runs the sandbox in a qemu VM. It needs KVM and
 a guest image, so it skips itself unless `TOSHI_DRIVER_E2E_BIN` is set,
-and CI does not set it.
+and CI does not set it. It does not stop or start a sandbox: a kept VM
+needs a workspace that allows kept VMs and a host of the workspace's own
+whose agent keeps VMs, which that stack does not have. The unit tests
+cover `Stop` and `Start` against a fake server.
 
 ```sh
 TOSHI_SERVER_REPOSITORY=<repository URL> \
@@ -270,7 +312,7 @@ stack's logs.
 ## Versions
 
 `go.mod` pins the client and `go.toshicloud.io/api` to one version each:
-`go.toshicloud.io/toshi` v0.3.0 and `go.toshicloud.io/api` v0.3.0. Moving
+`go.toshicloud.io/toshi` v0.5.0 and `go.toshicloud.io/api` v0.4.1. Moving
 either to another version is one pull request that changes `go.mod` and
 `go.sum`.
 

@@ -23,7 +23,7 @@ const (
 	// chooses and which names one sandbox per driver.
 	LabelSandbox = "toshi-sandbox-driver/sandbox"
 	// LabelState holds the driver's own state for the sandbox: StateStarting,
-	// StateReady or StateBusy.
+	// StateReady, StateBusy or StateStopped.
 	LabelState = "toshi-sandbox-driver/state"
 )
 
@@ -35,7 +35,13 @@ const (
 	StateReady = "ready"
 	// StateBusy is a running sandbox the driver runs a command in.
 	StateBusy = "busy"
+	// StateStopped is a kept sandbox powered off, by Stop or by Toshi.
+	StateStopped = "stopped"
 )
+
+// ErrStopped is what Execute and WaitRunning return for a stopped sandbox:
+// its VM is powered off until Start runs it again.
+var ErrStopped = errors.New("driver: the sandbox is stopped")
 
 // waitBound is how long one WaitSandbox call asks the server to wait.
 // toshi-go asks again until the sandbox reaches a state or the context ends.
@@ -48,6 +54,10 @@ type Spec struct {
 	// MaxDuration is how long the sandbox may run: required, at least one
 	// minute and a whole number of minutes. The server stops it then.
 	MaxDuration time.Duration
+	// KeepVM keeps the sandbox's VM, powered off on its disk, while the
+	// sandbox is stopped, so Stop and Start can be used. The workspace must
+	// allow it; otherwise Create fails with FAILED_PRECONDITION.
+	KeepVM bool
 }
 
 // Sandbox is one sandbox of the driver's, as the driver last read it.
@@ -61,8 +71,20 @@ type Sandbox struct {
 // ID returns the sandbox's workload ID.
 func (s *Sandbox) ID() string { return s.sandbox.GetId() }
 
-// State returns the driver's state for the sandbox, from its label.
-func (s *Sandbox) State() string { return s.sandbox.GetLabels()[LabelState] }
+// State returns the driver's state for the sandbox, from the sandbox as it
+// last read it: a sandbox in CREATED with a stop time is StateStopped; a
+// sandbox labelled StateStopped otherwise, left by a Start that was answered
+// before the label was rewritten or by a crash in between, is StateStarting;
+// otherwise State is the label's.
+func (s *Sandbox) State() string {
+	if status := s.sandbox.GetStatus(); status.GetState() == workspacev1.SandboxState_SANDBOX_STATE_CREATED && status.GetStoppedAt() != nil {
+		return StateStopped
+	}
+	if state := s.sandbox.GetLabels()[LabelState]; state != StateStopped {
+		return state
+	}
+	return StateStarting
+}
 
 // Labels returns a copy of the sandbox's labels.
 func (s *Sandbox) Labels() map[string]string { return maps.Clone(s.sandbox.GetLabels()) }
@@ -92,6 +114,7 @@ func (d *Driver) Create(ctx context.Context, name string, spec Spec) (*Sandbox, 
 		Spec: &workspacev1.SandboxSpec{
 			Size:        spec.Size,
 			MaxDuration: durationpb.New(spec.MaxDuration),
+			KeepVm:      spec.KeepVM,
 		},
 		Labels: map[string]string{
 			LabelDriver:  d.cfg.Name,
@@ -106,15 +129,18 @@ func (d *Driver) Create(ctx context.Context, name string, spec Spec) (*Sandbox, 
 	return &Sandbox{Name: name, sandbox: resp.GetSandbox()}, nil
 }
 
-// requestKey is the request key of a call on the sandbox called name: the
-// call's prefix and a hash of the project, the environment and the driver's
-// and the sandbox's names. The server keeps one key space per workspace, so
-// the scope keeps one driver name apart across environments. Each part is
-// hashed after its length, so names may hold any bytes and no two sets of
-// parts share a key.
-func (d *Driver) requestKey(prefix, name string) string {
+// requestKey is the request key of a call on a sandbox: the call's prefix and
+// a hash of the project, the environment, the driver's name and the parts the
+// call names. The server keeps one key space per workspace, so the scope
+// keeps one driver name apart across environments. Each part is hashed after
+// its length, so names may hold any bytes and no two sets of parts share a
+// key.
+func (d *Driver) requestKey(prefix string, parts ...string) string {
 	var b []byte
-	for _, part := range []string{d.cfg.Project, d.cfg.Environment, d.cfg.Name, name} {
+	all := make([]string, 0, 3+len(parts))
+	all = append(all, d.cfg.Project, d.cfg.Environment, d.cfg.Name)
+	all = append(all, parts...)
+	for _, part := range all {
 		b = binary.BigEndian.AppendUint64(b, uint64(len(part)))
 		b = append(b, part...)
 	}
@@ -123,11 +149,15 @@ func (d *Driver) requestKey(prefix, name string) string {
 }
 
 // WaitRunning waits with WaitSandbox until the sandbox runs or ends, reads
-// it with GetSandbox, and records it as StateReady. A sandbox recorded as
-// StateBusy stays so: a command Execute lost track of may still run in it.
-// It fails when the sandbox is not running. It has no bound of its own: ctx
-// ends a wait for a sandbox that stays queued.
+// it with GetSandbox, and records it as StateReady. A stopped sandbox fails
+// with ErrStopped without waiting. A sandbox recorded as StateBusy stays so:
+// a command Execute lost track of may still run in it. It fails when the
+// sandbox is not running. It has no bound of its own: ctx ends a wait for a
+// sandbox that stays queued.
 func (d *Driver) WaitRunning(ctx context.Context, sb *Sandbox) error {
+	if sb.State() == StateStopped {
+		return fmt.Errorf("driver: wait for sandbox %s: %w", sb.ID(), ErrStopped)
+	}
 	if _, err := d.client.Workload().Sandboxes().Wait(ctx, &workspacev1.WaitSandboxRequest{
 		Id:      sb.ID(),
 		States:  []workspacev1.SandboxState{workspacev1.SandboxState_SANDBOX_STATE_RUNNING, workspacev1.SandboxState_SANDBOX_STATE_ENDED},

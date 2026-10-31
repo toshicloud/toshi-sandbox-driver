@@ -8,11 +8,13 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	workspacev1 "go.toshicloud.io/api/workspacev1"
 	"go.toshicloud.io/api/workspacev1/workspacev1connect"
 	toshi "go.toshicloud.io/toshi"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // fake serves the calls the driver makes from one in-memory sandbox. Its
@@ -31,7 +33,12 @@ type fake struct {
 	waits        []*workspacev1.WaitSandboxRequest
 	updates      []*workspacev1.UpdateSandboxRequest
 	cancels      []*workspacev1.CancelExecutionRequest
+	stops        []*workspacev1.StopSandboxRequest
+	starts       []*workspacev1.StartSandboxRequest
 	sandbox      *workspacev1.Sandbox
+	// tick numbers the sandbox's changes; touch moves the sandbox's
+	// update time one second on from the last.
+	tick int64
 	// waitState is the state WaitSandbox reaches.
 	waitState workspacev1.SandboxState
 	// cancelled is closed by the first CancelExecution.
@@ -101,11 +108,20 @@ func (f *fake) CreateSandbox(_ context.Context, req *connect.Request[workspacev1
 			Id:          "wl-1",
 			Project:     req.Msg.GetProject(),
 			Environment: req.Msg.GetEnvironment(),
+			Spec:        req.Msg.GetSpec(),
 			Labels:      maps.Clone(req.Msg.GetLabels()),
 			Status:      &workspacev1.SandboxStatus{State: workspacev1.SandboxState_SANDBOX_STATE_CREATED},
 		}
+		f.touch()
 	}
 	return connect.NewResponse(&workspacev1.CreateSandboxResponse{Sandbox: f.sandbox}), nil
+}
+
+// touch records a change of the sandbox at the fake's clock, one second after
+// the change before.
+func (f *fake) touch() {
+	f.tick++
+	f.sandbox.Status.UpdatedAt = timestamppb.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(f.tick) * time.Second))
 }
 
 // WaitSandbox moves the sandbox to waitState and answers at once.
@@ -114,6 +130,7 @@ func (f *fake) WaitSandbox(_ context.Context, req *connect.Request[workspacev1.W
 	defer f.mu.Unlock()
 	f.waits = append(f.waits, req.Msg)
 	f.sandbox.Status.State = f.waitState
+	f.touch()
 	return connect.NewResponse(&workspacev1.WaitSandboxResponse{Sandbox: f.sandbox, Reached: true}), nil
 }
 
@@ -132,7 +149,48 @@ func (f *fake) UpdateSandbox(_ context.Context, req *connect.Request[workspacev1
 	defer f.mu.Unlock()
 	f.updates = append(f.updates, req.Msg)
 	f.sandbox.Labels = maps.Clone(req.Msg.GetSandbox().GetLabels())
+	f.touch()
 	return connect.NewResponse(&workspacev1.UpdateSandboxResponse{Sandbox: f.sandbox}), nil
+}
+
+// StopSandbox stops the sandbox, keeping its VM, or answers with it as it is
+// when it is stopped already. A sandbox created without KeepVm cannot be
+// stopped.
+func (f *fake) StopSandbox(_ context.Context, req *connect.Request[workspacev1.StopSandboxRequest]) (*connect.Response[workspacev1.StopSandboxResponse], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stops = append(f.stops, req.Msg)
+	if !f.sandbox.GetSpec().GetKeepVm() {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, nil)
+	}
+	status := f.sandbox.GetStatus()
+	if status.GetState() == workspacev1.SandboxState_SANDBOX_STATE_CREATED && status.GetStoppedAt() != nil {
+		return connect.NewResponse(&workspacev1.StopSandboxResponse{Sandbox: f.sandbox}), nil
+	}
+	status.State = workspacev1.SandboxState_SANDBOX_STATE_CREATED
+	f.touch()
+	status.StoppedAt = status.UpdatedAt
+	return connect.NewResponse(&workspacev1.StopSandboxResponse{Sandbox: f.sandbox}), nil
+}
+
+// StartSandbox queues a run on the sandbox's kept VM, or answers with it as
+// it is when it is queued or running already.
+func (f *fake) StartSandbox(_ context.Context, req *connect.Request[workspacev1.StartSandboxRequest]) (*connect.Response[workspacev1.StartSandboxResponse], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.starts = append(f.starts, req.Msg)
+	if !f.sandbox.GetSpec().GetKeepVm() {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, nil)
+	}
+	status := f.sandbox.GetStatus()
+	switch status.GetState() {
+	case workspacev1.SandboxState_SANDBOX_STATE_QUEUED, workspacev1.SandboxState_SANDBOX_STATE_RUNNING:
+	default:
+		status.State = workspacev1.SandboxState_SANDBOX_STATE_QUEUED
+		status.StoppedAt = nil
+		f.touch()
+	}
+	return connect.NewResponse(&workspacev1.StartSandboxResponse{Sandbox: f.sandbox}), nil
 }
 
 func (f *fake) CancelExecution(_ context.Context, req *connect.Request[workspacev1.CancelExecutionRequest]) (*connect.Response[workspacev1.CancelExecutionResponse], error) {
@@ -296,6 +354,13 @@ func (f *fake) states() []string {
 		out = append(out, u.GetSandbox().GetLabels()[LabelState])
 	}
 	return out
+}
+
+// transitions returns copies of the stop and start requests f received.
+func (f *fake) transitions() (stops []*workspacev1.StopSandboxRequest, starts []*workspacev1.StartSandboxRequest) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.stops), slices.Clone(f.starts)
 }
 
 // newTestDriver serves f over TLS with HTTP/2, as Execute needs, and returns

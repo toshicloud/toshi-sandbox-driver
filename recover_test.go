@@ -165,6 +165,37 @@ func TestRecoverAppliesSandboxEvents(t *testing.T) {
 	}
 }
 
+// TestRecoverReadsAStoppedSandbox covers a kept sandbox Toshi stopped: the
+// event shows it in CREATED with a stop time while its label still says
+// ready, and State reads it as stopped.
+func TestRecoverReadsAStoppedSandbox(t *testing.T) {
+	stopped := sandboxOf("wl-1", "orchestrator-1", "a")
+	stopped.Status = &workspacev1.SandboxStatus{
+		State:     workspacev1.SandboxState_SANDBOX_STATE_CREATED,
+		StoppedAt: timestamppb.New(time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)),
+	}
+	f := newFake()
+	f.listCursor = "c0"
+	f.events = []*workspacev1.Event{
+		sandboxEvent("c1", workspacev1.EventType_EVENT_TYPE_WORKLOAD_STATE_CHANGED, stopped),
+	}
+	d := newTestDriver(t, f, testConfig)
+	rec, err := d.Recover(context.Background(), "c0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Sandboxes) != 1 {
+		t.Fatalf("%d sandboxes", len(rec.Sandboxes))
+	}
+	sb := rec.Sandboxes[0]
+	if label := sb.Labels()[LabelState]; label != StateReady {
+		t.Fatalf("recovered label = %q, want %q", label, StateReady)
+	}
+	if got := sb.State(); got != StateStopped {
+		t.Fatalf("recovered state = %q, want %q", got, StateStopped)
+	}
+}
+
 func TestWatch(t *testing.T) {
 	f := newFake()
 	ours, theirs := sandboxOf("wl-1", "orchestrator-1", "a"), sandboxOf("wl-3", "orchestrator-2", "c")
