@@ -11,16 +11,20 @@ import (
 // Stop stops the sandbox with Sandboxes.Stop, which ends its run and every
 // execution in it, keeps its VM, and records the sandbox as StateStopped. The
 // commands in it are cancelled. A sandbox created without KeepVM, or one that
-// has ended, fails with FAILED_PRECONDITION. Its request key names the
-// transition from the sandbox as last read: a call repeated after a lost
-// answer, with the same *Sandbox, gets the first call's answer, while a later
-// stop of the sandbox, after it changed, gets a key of its own.
+// has ended, fails with FAILED_PRECONDITION, and one an operator holds with
+// ErrHeld. Its request key names the transition from the sandbox as last read:
+// a call repeated after a lost answer, with the same *Sandbox, gets the first
+// call's answer, while a later stop of the sandbox, after it changed, gets a
+// key of its own.
 func (d *Driver) Stop(ctx context.Context, sb *Sandbox) error {
 	resp, err := d.client.Workload().Sandboxes().Stop(ctx, &workspacev1.StopSandboxRequest{
 		Id:         sb.ID(),
 		RequestKey: d.transitionKey("stop", sb),
 	})
 	if err != nil {
+		if held, ok := d.refused(ctx, "stop", sb, err); ok {
+			return held
+		}
 		return fmt.Errorf("driver: stop sandbox %s: %w", sb.ID(), err)
 	}
 	sb.sandbox = resp.GetSandbox()
@@ -30,17 +34,20 @@ func (d *Driver) Stop(ctx context.Context, sb *Sandbox) error {
 // Start starts the sandbox with Sandboxes.Start, which queues a run on its
 // kept VM, and records the sandbox as StateStarting. WaitRunning then waits
 // until it runs and records it as StateReady. A sandbox created without
-// KeepVM, or one that has ended, fails with FAILED_PRECONDITION. Its request
-// key names the transition from the sandbox as last read: a call repeated
-// after a lost answer, with the same *Sandbox, gets the first call's answer,
-// while a later start of the sandbox, after it changed, gets a key of its
-// own.
+// KeepVM, or one that has ended, fails with FAILED_PRECONDITION, and one an
+// operator holds with ErrHeld. Its request key names the transition from the
+// sandbox as last read: a call repeated after a lost answer, with the same
+// *Sandbox, gets the first call's answer, while a later start of the sandbox,
+// after it changed, gets a key of its own.
 func (d *Driver) Start(ctx context.Context, sb *Sandbox) error {
 	resp, err := d.client.Workload().Sandboxes().Start(ctx, &workspacev1.StartSandboxRequest{
 		Id:         sb.ID(),
 		RequestKey: d.transitionKey("start", sb),
 	})
 	if err != nil {
+		if held, ok := d.refused(ctx, "start", sb, err); ok {
+			return held
+		}
 		return fmt.Errorf("driver: start sandbox %s: %w", sb.ID(), err)
 	}
 	sb.sandbox = resp.GetSandbox()

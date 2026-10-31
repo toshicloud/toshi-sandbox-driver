@@ -133,7 +133,11 @@ if err != nil {
   `FAILED_PRECONDITION`.
 - `WaitRunning` waits until the sandbox runs and reads it; it fails if
   the sandbox ended instead, and with `ErrStopped` at once if it is
-  stopped. It has no bound of its own, so give `ctx` a deadline.
+  stopped. A sandbox an operator holds fails with `ErrHeld` instead: here,
+  in `Execute`, and in a refused `Start`, `Stop` or `Delete`, its
+  `HeldError` names the hold's reason, when it began and where to write,
+  and `Unwrap` gives the server's refusal. It has no bound of its own, so
+  give `ctx` a deadline.
 - `Execute` runs a command, feeding `Stdin` and streaming its output, and
   cancels it with `CancelExecution` when `Timeout` passes; a zero
   `Timeout` sets no limit. `Argv[0]` is looked up on the guest's `PATH`,
@@ -312,7 +316,7 @@ stack's logs.
 ## Versions
 
 `go.mod` pins the client and `go.toshicloud.io/api` to one version each:
-`go.toshicloud.io/toshi` v0.5.1 and `go.toshicloud.io/api` v0.4.1. Moving
+`go.toshicloud.io/toshi` v0.6.0 and `go.toshicloud.io/api` v0.5.0. Moving
 either to another version is one pull request that changes `go.mod` and
 `go.sum`.
 

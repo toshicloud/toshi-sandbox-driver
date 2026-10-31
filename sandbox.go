@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 	"time"
 
+	"connectrpc.com/connect"
 	workspacev1 "go.toshicloud.io/api/workspacev1"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
@@ -42,6 +45,154 @@ const (
 // ErrStopped is what Execute and WaitRunning return for a stopped sandbox:
 // its VM is powered off until Start runs it again.
 var ErrStopped = errors.New("driver: the sandbox is stopped")
+
+// ErrHeld is what the driver returns for a sandbox an operator holds:
+// WaitRunning and Execute in place of their stopped or not running errors, and
+// Start, Stop and Delete in place of the server's refusal. The hold names its
+// reason in a HeldError, with when it began and where to write.
+var ErrHeld = errors.New("driver: the sandbox is held by the operator")
+
+// HeldError is an operator's hold on a sandbox: the reason, when it began and
+// where to write for its release. The driver learns of a hold from the
+// sandbox's status or from the server's refusal of Start, Stop or Delete. Is
+// matches ErrHeld, and Unwrap returns the server's refusal, nil when the hold
+// was read from the status.
+type HeldError struct {
+	// SandboxID is the sandbox's workload ID.
+	SandboxID string
+	// Hold is the operator's hold. A value other than the API's suspected or
+	// confirmed abuse names no reason.
+	Hold workspacev1.OperatorHold
+	// HeldAt is when the operator held the sandbox; the zero time when the
+	// driver does not know.
+	HeldAt time.Time
+	// Contact is the email address or URL to write to for the hold's
+	// release; empty when the driver does not know.
+	Contact string
+	// Err is the server's refusal that named the hold, nil when the driver
+	// read the hold from the sandbox's status.
+	Err error
+
+	// verb is the call the server refused: "start", "stop" or "delete".
+	// Empty for a hold read from the status.
+	verb string
+}
+
+// Error names the sandbox, the reason, when the hold began and where to
+// write: after the sandbox when the hold came from its status, and after the
+// refused call when it came from the server.
+func (e *HeldError) Error() string {
+	var b strings.Builder
+	if e.verb == "" {
+		fmt.Fprintf(&b, "driver: sandbox %s is ", e.SandboxID)
+	} else {
+		fmt.Fprintf(&b, "driver: %s sandbox %s: ", e.verb, e.SandboxID)
+	}
+	b.WriteString(e.phrase())
+	return b.String()
+}
+
+// phrase is the hold in words: its reason when the API names one, then when it
+// began and where to write, each when the driver knows it.
+func (e *HeldError) phrase() string {
+	var b strings.Builder
+	b.WriteString("held by the operator")
+	switch e.Hold {
+	case workspacev1.OperatorHold_OPERATOR_HOLD_ABUSE_SUSPECTED:
+		b.WriteString(" for suspected abuse")
+	case workspacev1.OperatorHold_OPERATOR_HOLD_ABUSE_CONFIRMED:
+		b.WriteString(" for confirmed abuse")
+	}
+	if !e.HeldAt.IsZero() {
+		fmt.Fprintf(&b, " since %s", e.HeldAt.UTC().Format(time.RFC3339))
+	}
+	if e.Contact != "" {
+		fmt.Fprintf(&b, "; write to %s", e.Contact)
+	}
+	return b.String()
+}
+
+// Is reports that the error is ErrHeld.
+func (e *HeldError) Is(target error) bool { return target == ErrHeld }
+
+// Unwrap returns the server's refusal, nil when the driver read the hold from
+// the sandbox's status.
+func (e *HeldError) Unwrap() error { return e.Err }
+
+// heldStatus returns the hold on the sandbox as it was last read, if its
+// status carries one.
+func heldStatus(sb *Sandbox) (*HeldError, bool) {
+	status := sb.sandbox.GetStatus()
+	if status.GetOperatorHold() == workspacev1.OperatorHold_OPERATOR_HOLD_UNSPECIFIED {
+		return nil, false
+	}
+	held := &HeldError{SandboxID: sb.ID(), Hold: status.GetOperatorHold(), Contact: status.GetHoldContact()}
+	if at := status.GetHeldAt(); at != nil {
+		held.HeldAt = at.AsTime()
+	}
+	return held, true
+}
+
+// heldRefusal returns the hold the server named when it refused err, if it
+// refused because an operator holds the sandbox: FAILED_PRECONDITION with an
+// ErrorInfo detail whose reason is workload_held. A hold the metadata does not
+// name is unspecified.
+func heldRefusal(err error) (workspacev1.OperatorHold, bool) {
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) || connectErr.Code() != connect.CodeFailedPrecondition {
+		return workspacev1.OperatorHold_OPERATOR_HOLD_UNSPECIFIED, false
+	}
+	for _, detail := range connectErr.Details() {
+		msg, valueErr := detail.Value()
+		if valueErr != nil {
+			continue
+		}
+		info, ok := msg.(*errdetails.ErrorInfo)
+		if !ok || info.GetReason() != "workload_held" {
+			continue
+		}
+		return holdFromMetadata(info.GetMetadata()["hold"]), true
+	}
+	return workspacev1.OperatorHold_OPERATOR_HOLD_UNSPECIFIED, false
+}
+
+// holdFromMetadata returns the hold the refusal's metadata names. Only the two
+// reasons the API defines are named; another value is unspecified.
+func holdFromMetadata(hold string) workspacev1.OperatorHold {
+	switch hold {
+	case "abuse_suspected":
+		return workspacev1.OperatorHold_OPERATOR_HOLD_ABUSE_SUSPECTED
+	case "abuse_confirmed":
+		return workspacev1.OperatorHold_OPERATOR_HOLD_ABUSE_CONFIRMED
+	}
+	return workspacev1.OperatorHold_OPERATOR_HOLD_UNSPECIFIED
+}
+
+// refused returns the error for a call the server refused because an operator
+// holds the sandbox, and false for another error. It makes one GetSandbox to
+// read the hold, when it began and where to write; when that call fails, the
+// error names the hold the refusal's metadata gave, with no time and no
+// contact.
+func (d *Driver) refused(ctx context.Context, verb string, sb *Sandbox, refusal error) (*HeldError, bool) {
+	hold, ok := heldRefusal(refusal)
+	if !ok {
+		return nil, false
+	}
+	held := &HeldError{SandboxID: sb.ID(), Hold: hold, Err: refusal, verb: verb}
+	resp, err := d.client.Workload().Sandboxes().Get(ctx, &workspacev1.GetSandboxRequest{Id: sb.ID()})
+	if err != nil {
+		return held, true
+	}
+	status := resp.GetSandbox().GetStatus()
+	if hold := status.GetOperatorHold(); hold != workspacev1.OperatorHold_OPERATOR_HOLD_UNSPECIFIED {
+		held.Hold = hold
+	}
+	if at := status.GetHeldAt(); at != nil {
+		held.HeldAt = at.AsTime()
+	}
+	held.Contact = status.GetHoldContact()
+	return held, true
+}
 
 // waitBound is how long one WaitSandbox call asks the server to wait.
 // toshi-go asks again until the sandbox reaches a state or the context ends.
@@ -150,12 +301,16 @@ func (d *Driver) requestKey(prefix string, parts ...string) string {
 
 // WaitRunning waits with WaitSandbox until the sandbox runs or ends, reads
 // it with GetSandbox, and records it as StateReady. A stopped sandbox fails
-// with ErrStopped without waiting. A sandbox recorded as StateBusy stays so:
-// a command Execute lost track of may still run in it. It fails when the
-// sandbox is not running. It has no bound of its own: ctx ends a wait for a
-// sandbox that stays queued.
+// with ErrStopped without waiting, and a held one with ErrHeld. A sandbox
+// recorded as StateBusy stays so: a command Execute lost track of may still
+// run in it. It fails when the sandbox is not running, or with ErrHeld when an
+// operator holds it. It has no bound of its own: ctx ends a wait for a sandbox
+// that stays queued.
 func (d *Driver) WaitRunning(ctx context.Context, sb *Sandbox) error {
 	if sb.State() == StateStopped {
+		if held, ok := heldStatus(sb); ok {
+			return held
+		}
 		return fmt.Errorf("driver: wait for sandbox %s: %w", sb.ID(), ErrStopped)
 	}
 	if _, err := d.client.Workload().Sandboxes().Wait(ctx, &workspacev1.WaitSandboxRequest{
@@ -171,6 +326,9 @@ func (d *Driver) WaitRunning(ctx context.Context, sb *Sandbox) error {
 	}
 	sb.sandbox = resp.GetSandbox()
 	if status := sb.sandbox.GetStatus(); status.GetState() != workspacev1.SandboxState_SANDBOX_STATE_RUNNING {
+		if held, ok := heldStatus(sb); ok {
+			return held
+		}
 		return fmt.Errorf("driver: sandbox %s is %s, not running (end reason %s, stop reason %s)",
 			sb.ID(), status.GetState(), status.GetEndReason(), status.GetStopReason())
 	}

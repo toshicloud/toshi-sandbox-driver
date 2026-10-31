@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	workspacev1 "go.toshicloud.io/api/workspacev1"
 	"go.toshicloud.io/api/workspacev1/workspacev1connect"
 	toshi "go.toshicloud.io/toshi"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -36,6 +38,11 @@ type fake struct {
 	stops        []*workspacev1.StopSandboxRequest
 	starts       []*workspacev1.StartSandboxRequest
 	sandbox      *workspacev1.Sandbox
+	gets         []*workspacev1.GetSandboxRequest
+	// refused, when set, is the hold's metadata in the refusal Stop, Start
+	// and Delete answer with; getErr, when set, is what GetSandbox returns.
+	refused string
+	getErr  error
 	// tick numbers the sandbox's changes; touch moves the sandbox's
 	// update time one second on from the last.
 	tick int64
@@ -134,9 +141,41 @@ func (f *fake) WaitSandbox(_ context.Context, req *connect.Request[workspacev1.W
 	return connect.NewResponse(&workspacev1.WaitSandboxResponse{Sandbox: f.sandbox, Reached: true}), nil
 }
 
+// hold puts an operator's hold on the sandbox's status: its reason, when it
+// began and where to write.
+func (f *fake) hold(hold workspacev1.OperatorHold, at *timestamppb.Timestamp, contact string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	status := f.sandbox.GetStatus()
+	status.OperatorHold = hold
+	status.HeldAt = at
+	status.HoldContact = contact
+}
+
+// heldRefusalError is the server's refusal of a call on a held sandbox: the
+// API's FAILED_PRECONDITION with an ErrorInfo detail naming the hold.
+func heldRefusalError(hold string) error {
+	detail, err := connect.NewErrorDetail(&errdetails.ErrorInfo{
+		Reason:   "workload_held",
+		Domain:   "toshi.run",
+		Metadata: map[string]string{"hold": hold},
+	})
+	if err != nil {
+		panic(err)
+	}
+	refusal := connect.NewError(connect.CodeFailedPrecondition,
+		errors.New("sandbox wl-1 is on hold: suspected abuse; an operator can release it"))
+	refusal.AddDetail(detail)
+	return refusal
+}
+
 func (f *fake) GetSandbox(_ context.Context, req *connect.Request[workspacev1.GetSandboxRequest]) (*connect.Response[workspacev1.GetSandboxResponse], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.gets = append(f.gets, req.Msg)
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	if f.sandbox == nil || req.Msg.GetId() != f.sandbox.GetId() {
 		return nil, connect.NewError(connect.CodeNotFound, nil)
 	}
@@ -160,6 +199,9 @@ func (f *fake) StopSandbox(_ context.Context, req *connect.Request[workspacev1.S
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stops = append(f.stops, req.Msg)
+	if f.refused != "" {
+		return nil, heldRefusalError(f.refused)
+	}
 	if !f.sandbox.GetSpec().GetKeepVm() {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, nil)
 	}
@@ -179,6 +221,9 @@ func (f *fake) StartSandbox(_ context.Context, req *connect.Request[workspacev1.
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.starts = append(f.starts, req.Msg)
+	if f.refused != "" {
+		return nil, heldRefusalError(f.refused)
+	}
 	if !f.sandbox.GetSpec().GetKeepVm() {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, nil)
 	}
@@ -316,6 +361,9 @@ func (f *fake) DeleteSandbox(_ context.Context, req *connect.Request[workspacev1
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deletes = append(f.deletes, req.Msg)
+	if f.refused != "" {
+		return nil, heldRefusalError(f.refused)
+	}
 	if f.operation == nil {
 		f.operation = &workspacev1.Operation{Id: "op-1", WorkloadId: req.Msg.GetId()}
 	}
@@ -343,6 +391,13 @@ func (f *fake) calls() (creates []*workspacev1.CreateSandboxRequest, waits []*wo
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.creates), slices.Clone(f.waits), slices.Clone(f.updates), slices.Clone(f.cancels)
+}
+
+// getCount returns how many GetSandbox requests f received.
+func (f *fake) getCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.gets)
 }
 
 // states returns the LabelState values the updates set, in order.
