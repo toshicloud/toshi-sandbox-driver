@@ -1,0 +1,86 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The driver has no version file, so the tag is the only version and
+      # there is nothing to compare it with.
+      - name: Check the tag
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag $tag is not vMAJOR.MINOR.PATCH."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $tag is on a commit that main does not contain."
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists and is left as it is."
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
+      - name: Write the notes
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          dep() {
+            sed -n "s/^\(require \)\{0,1\}[[:space:]]*go\.toshicloud\.io\/$1 \(v[^[:space:]]*\).*/\2/p" go.mod | head -n 1
+          }
+          toshi="$(dep toshi)"
+          api="$(dep api)"
+          gover="$(sed -n 's/^go \([0-9]*\.[0-9]*\).*/\1/p' go.mod | head -n 1)"
+          if [ -z "$toshi" ] || [ -z "$api" ] || [ -z "$gover" ]; then
+            echo "::error::go.mod does not name the Toshi client, the API module and the Go version."
+            exit 1
+          fi
+          {
+            echo "## Install"
+            echo
+            echo '```sh'
+            echo "go get github.com/toshicloud/toshi-sandbox-driver@$tag"
+            echo '```'
+            echo
+            echo "Requires \`go.toshicloud.io/toshi\` $toshi, \`go.toshicloud.io/api\` $api and Go $gover. The driver is a Go package; it has no binary."
+            echo
+            if [ "$(git cat-file -t "refs/tags/$tag")" = tag ]; then
+              git for-each-ref --format='%(contents)' "refs/tags/$tag"
+            else
+              if prev="$(git describe --tags --abbrev=0 "$tag^" 2>/dev/null)"; then
+                echo "What changed since $prev:"
+                echo
+                git log --no-merges --format='- %s' "$prev..$tag"
+              else
+                echo "What changed:"
+                echo
+                git log --no-merges --format='- %s' "$tag"
+              fi
+            fi
+          } > "$RUNNER_TEMP/notes.md"
+
+      - name: Create the release
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
