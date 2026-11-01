@@ -14,7 +14,7 @@ carry is needed.
 
 
 `go.mod` pins the client and `go.toshicloud.io/api` to one version each:
-`go.toshicloud.io/toshi` v0.7.0 and `go.toshicloud.io/api` v0.6.0. Moving
+`go.toshicloud.io/toshi` v0.8.0 and `go.toshicloud.io/api` v0.8.0. Moving
 either to another version is one pull request that changes `go.mod` and
 `go.sum`.
 

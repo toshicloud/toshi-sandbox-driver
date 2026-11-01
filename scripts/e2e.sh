@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds toshi at the commit e2e/pin.env names and runs the end-to-end test
+# Builds toshi and toshi-control at the commit e2e/pin.env names and runs the end-to-end test
 # against it. TOSHI_DRIVER_E2E_IMAGE_DIR and TOSHI_DRIVER_E2E_IMAGE must name
 # a guest image that commit's agent runs; the host needs KVM.
 set -euo pipefail
@@ -21,6 +21,7 @@ git -C "$tmp/server" checkout --quiet --detach "$TOSHI_SERVER_REF"
 (
   cd "$tmp/server"
   go build -o "$tmp/toshi" ./cmd/toshi
+  go build -o "$tmp/toshi-control" ./cmd/toshi-control
 )
 
 test=(go test -count=1 -v -timeout 15m ./e2e/...)
@@ -37,5 +38,6 @@ fi
 cd "$root"
 echo "serving Toshi $TOSHI_SERVER_REF from $tmp/toshi"
 TOSHI_DRIVER_E2E_BIN="$tmp/toshi" \
+TOSHI_DRIVER_E2E_CONTROL_BIN="$tmp/toshi-control" \
 TOSHI_DRIVER_E2E_EXPECT_COMMIT="$TOSHI_SERVER_REF" \
   "${test[@]}"

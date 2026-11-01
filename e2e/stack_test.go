@@ -43,10 +43,12 @@ type stack struct {
 
 // stackConfig is what startStack needs from the environment.
 type stackConfig struct {
-	bin       string
-	imageDir  string
-	imageName string
-	accel     string
+	bin string
+	// controlBin is the toshi-control binary, which carries the dev commands.
+	controlBin string
+	imageDir   string
+	imageName  string
+	accel      string
 	// logDir, when set, receives a copy of each child's log at cleanup.
 	logDir string
 }
@@ -126,7 +128,7 @@ size = %q
 target = 1
 `, baseURL, caPath, hostEnrollPath, mkdir(t, dir, "agent"), cfg.imageDir, mkdir(t, dir, "instances"), cfg.accel, cfg.imageName, sandboxSize))
 
-	startChild(t, filepath.Join(dir, "fake.log"), cfg.logDir, cfg.bin, "dev", "github", "serve",
+	startChild(t, filepath.Join(dir, "fake.log"), cfg.logDir, cfg.controlBin, "dev", "github", "serve",
 		"--i-know-this-is-fake",
 		"--listen", fmt.Sprintf("127.0.0.1:%d", fakePort),
 		"--installation", installationID+":"+account,
@@ -147,7 +149,7 @@ target = 1
 		"TOSHI_CA_FILE":    caPath,
 		"TOSHI_TOKEN_FILE": operatorPath,
 	}
-	run(t, nil, cfg.bin, "dev", "github", "send",
+	run(t, nil, cfg.controlBin, "dev", "github", "send",
 		"--i-know-this-is-fake",
 		"--url", baseURL+"/webhooks/github",
 		"--ca-file", caPath,
