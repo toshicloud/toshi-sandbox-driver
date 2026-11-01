@@ -20,7 +20,7 @@
 
 A Go package for an agent orchestrator that needs sandboxes: it creates a Toshi sandbox, runs commands in it with standard input and streamed output, stops and starts it when its VM is kept, recovers its sandboxes after a restart, and deletes it. It uses only the public Workspace API, through the [Toshi Go client](https://pkg.go.dev/go.toshicloud.io/toshi).
 
-> **Early stage.** v0.1.0 is tagged; `main` is ahead of it with stop and start of a sandbox whose VM is kept.
+> **Early stage.** Releases are tagged and have release notes; the latest release is the one to use.
 > Interfaces may change before 1.0.
 > Read the [release notes](https://github.com/toshicloud/toshi-sandbox-driver/releases) when upgrading.
 
