@@ -7,9 +7,9 @@ require (
 	google.golang.org/protobuf v1.36.12
 )
 
-require go.toshicloud.io/toshi v0.7.0
+require go.toshicloud.io/toshi v0.8.0
 
 require (
-	go.toshicloud.io/api v0.6.0
+	go.toshicloud.io/api v0.8.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261026165753-2ffab32bce7e
 )

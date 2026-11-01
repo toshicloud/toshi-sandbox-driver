@@ -27,12 +27,12 @@ TOSHI_DRIVER_E2E_IMAGE=ubuntu-24.04-<version> \
 
 The script clones the server repository that `TOSHI_SERVER_REPOSITORY`
 names at the commit `e2e/pin.env` names, so it needs read access to that
-repository, then builds toshi and runs
+repository, then builds toshi and toshi-control and runs
 `go test ./e2e/...` against it. The image is `<dir>/<image>.qcow2`, built
 with `ubuntu-24.04/build.sh` in the
 [toshi-images](https://github.com/toshicloud/toshi-images) repository and
 installed with its `install.sh`. To serve a toshi binary of your own,
-set `TOSHI_DRIVER_E2E_BIN` with the two image variables and run
+set `TOSHI_DRIVER_E2E_BIN` and `TOSHI_DRIVER_E2E_CONTROL_BIN` with the two image variables and run
 `go test -v ./e2e/...`. `TOSHI_DRIVER_E2E_ACCEL` changes the qemu
 accelerator (default `kvm`), and `TOSHI_DRIVER_E2E_LOG_DIR` keeps the
 stack's logs.

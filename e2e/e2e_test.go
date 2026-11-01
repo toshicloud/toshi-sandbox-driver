@@ -37,12 +37,21 @@ func TestSandboxFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	controlBin := os.Getenv("TOSHI_DRIVER_E2E_CONTROL_BIN")
+	if controlBin == "" {
+		t.Fatal("TOSHI_DRIVER_E2E_CONTROL_BIN must name a toshi-control binary with TOSHI_DRIVER_E2E_BIN")
+	}
+	controlBin, err = filepath.Abs(controlBin)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := stackConfig{
-		bin:       bin,
-		imageDir:  os.Getenv("TOSHI_DRIVER_E2E_IMAGE_DIR"),
-		imageName: os.Getenv("TOSHI_DRIVER_E2E_IMAGE"),
-		accel:     os.Getenv("TOSHI_DRIVER_E2E_ACCEL"),
-		logDir:    os.Getenv("TOSHI_DRIVER_E2E_LOG_DIR"),
+		bin:        bin,
+		controlBin: controlBin,
+		imageDir:   os.Getenv("TOSHI_DRIVER_E2E_IMAGE_DIR"),
+		imageName:  os.Getenv("TOSHI_DRIVER_E2E_IMAGE"),
+		accel:      os.Getenv("TOSHI_DRIVER_E2E_ACCEL"),
+		logDir:     os.Getenv("TOSHI_DRIVER_E2E_LOG_DIR"),
 	}
 	if cfg.imageDir == "" || cfg.imageName == "" {
 		t.Fatal("TOSHI_DRIVER_E2E_IMAGE_DIR and TOSHI_DRIVER_E2E_IMAGE must be set with TOSHI_DRIVER_E2E_BIN")
